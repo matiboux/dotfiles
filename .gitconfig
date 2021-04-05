@@ -26,22 +26,28 @@
 	epipush = !git push && git push epita
 	co = checkout
 	br = branch
-	s = status -s
 	ss = status
+	s = ss -s
+	st = s --untracked-files=no
 	d = diff
+	dc = d --cached
 	a = "!f() { git add $@ && git status -s | grep '^[MARCD]'; }; f"
 	au = "!f() { git add -u $@ && git status -s | grep '^[MARCD]'; }; f"
 	aa = "!f() { git add . && git status -s | grep '^[MARCD]'; }; f"
 	c = commit
+	ca = commit --amend
 	cm = commit -m
+	r = reset
 	unstage = reset HEAD --
 	l = log --pretty=format:'%C(yellow)%h%Creset -%C(auto)%d%Creset %s %C(green)(%cr) %C(cyan)<%an>%Creset' --abbrev-commit
 	la = l --all
 	lg = l --graph
 	lga = lg --all
+	lag = la --graph
 	lps = l --branches --not --remotes
 	ll = log
 	lla = ll --all
 	last = ll -1 HEAD
+	slast = l -1 HEAD
 	localpurge = "!f() { git branch -vv | grep 'origin/.*: gone]' | awk '{print $1}' | xargs git branch -d; }; f"
 	remotepurge = "!f() { git remote prune ${1:-origin}; }; f"
