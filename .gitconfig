@@ -1,0 +1,47 @@
+[core]
+	#excludesfile = ~/.gitignore
+[user]
+	name = Matiboux
+	email = matiboux@gmail.com
+[color]
+	ui = true
+	branch = auto
+	diff = auto
+	interactive = auto
+	status = auto
+[commit]
+	verbose = true
+[pull]
+	default = simple
+	rebase = true
+[push]
+	default = simple
+[branch]
+	autosetupmerge = always
+	autosetuprebase = always
+[rebase]
+	autoSquash = true
+	autoStash = true
+[alias]
+	epipush = !git push && git push epita
+	co = checkout
+	br = branch
+	s = status -s
+	ss = status
+	d = diff
+	a = "!f() { git add $@ && git status -s | grep '^[MARCD]'; }; f"
+	au = "!f() { git add -u $@ && git status -s | grep '^[MARCD]'; }; f"
+	aa = "!f() { git add . && git status -s | grep '^[MARCD]'; }; f"
+	c = commit
+	cm = commit -m
+	unstage = reset HEAD --
+	l = log --pretty=format:'%C(yellow)%h%Creset -%C(auto)%d%Creset %s %C(green)(%cr) %C(cyan)<%an>%Creset' --abbrev-commit
+	la = l --all
+	lg = l --graph
+	lga = lg --all
+	lps = l --branches --not --remotes
+	ll = log
+	lla = ll --all
+	last = ll -1 HEAD
+	localpurge = "!f() { git branch -vv | grep 'origin/.*: gone]' | awk '{print $1}' | xargs git branch -d; }; f"
+	remotepurge = "!f() { git remote prune ${1:-origin}; }; f"
