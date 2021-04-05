@@ -126,6 +126,7 @@ export LS_COLORS=$LS_COLORS:'di=0;95:ex=0;92'
 
 # Git alias for managing dotfiles
 alias dotfiles='/usr/bin/git --git-dir="'$HOME'/.dotfiles/" --work-tree="'$HOME'"'
+alias gitdf='dotfiles'
 
 # Import aliases from .bash_aliases
 if [ -f ~/.bash_aliases ]; then
