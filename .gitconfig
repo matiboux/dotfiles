@@ -73,8 +73,11 @@
 	lps = lns
 	ll = log
 	lla = ll --all
-	last = ll -1 HEAD
-	slast = l -1 HEAD
+
+	# Last commit
+	last = l -1 HEAD
+	llast = ll -1 HEAD
+	dlast = show
 
 	# Purge
 	localpurge = "!f() { git branch -vv | grep 'origin/.*: gone]' | awk '{print $1}' | xargs git branch -d; }; f"
