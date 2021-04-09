@@ -34,9 +34,11 @@
 	st = s --untracked-files=no
 
 	# Push
-	epipush = !git push && git push epita
+	epipush = !git pt && git pt epita
 	p = push
 	pus = p
+	#pt = p --follow-tags
+	pt = p --tags
 
 	# Pull / Fetch
 	pul = pull
