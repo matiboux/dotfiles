@@ -61,6 +61,9 @@
 	cam = ca -m
 	cma = cam
 
+	# Tag
+	t = tag
+
 	# Reset
 	unstage = reset HEAD --
 	r = reset
