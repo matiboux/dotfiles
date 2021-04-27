@@ -37,6 +37,7 @@
 	epipush = !git pt && git pt epita
 	p = push
 	pus = p
+	pf = p --force-with-lease
 	#pt = p --follow-tags
 	pt = p --tags
 
