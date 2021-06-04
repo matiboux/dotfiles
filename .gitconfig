@@ -27,6 +27,7 @@
 	co = checkout
 	sw = switch
 	br = branch
+	b = branch
 
 	# Status
 	ss = status
