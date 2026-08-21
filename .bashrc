@@ -68,17 +68,18 @@ ps1_generator() {
 		# Append git status information
 		gitstatusshort=$(git status -s)
 		if [ -n "${gitstatusshort}" ]; then
-			if echo "${gitstatusshort}" | grep -q '^[MARCD]'; then
-				PS1+='\[\e[1;32m\]'
-			else
-				PS1+='\[\e[1;33m\]'
+			# Unstaged changes, including untracked files
+			if echo "${gitstatusshort}" | grep -qE '^\?\?|^.[MD]'; then
+				PS1+='\[\e[1;33m\]*'
 			fi
-			# Modified files
-			PS1+='+'
+			# Staged changes
+			if echo "${gitstatusshort}" | grep -q '^[MARCD]'; then
+				PS1+='\[\e[1;32m\]+'
+			fi
 		fi
 		if [ -n "$(git log --branches --not --remotes)" ]; then
-			# Unsynced branches
-			PS1+='\[\e[1;33m\]*'
+			# Unsynced branches (unpushed commits)
+			PS1+='\[\e[1;33m\]^'
 		fi
 
 		# Trailing space
