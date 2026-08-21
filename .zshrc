@@ -71,7 +71,7 @@ precmd() {
 }
 
 # [ user time dir (branch+) ]$
-PROMPT='%F{black}[ %F{cyan}%n %F{yellow}%* %F{yellow}%1~ %F{red}${vcs_info_msg_0_}%F{black}]%(!.#.$) %f'
+PROMPT='%F{black}[ %F{cyan}%n %F{8}%* %F{yellow}%1~ %F{red}${vcs_info_msg_0_}%F{black}]%(!.#.$) %f'
 
 ## ---
 ## Color support
