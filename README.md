@@ -1,3 +1,3 @@
 # Matiboux's dotfiles
 
-🐧 My configuration files
+🐧 My UNIX configuration files
