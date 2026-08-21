@@ -1,5 +1,4 @@
 # ~/.zshrc
-# Interactive shell setup for macOS (zsh)
 
 ## ---
 ## Zsh history
