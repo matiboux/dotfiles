@@ -3,16 +3,36 @@ set -eu
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-if [ -f "${HOME}/.gitconfig" ]; then
-	timestamp="$(date +%Y%m%d%H%M%S)"
-	backup_path="${HOME}/.gitconfig.bak.${timestamp}"
-	backup_index=0
-	while [ -e "$backup_path" ]; do
-		backup_index=$((backup_index + 1))
-		backup_path="${HOME}/.gitconfig.bak.${timestamp}.${backup_index}"
-	done
-	cp -p "${HOME}/.gitconfig" "$backup_path"
-fi
+backup_if_exists() {
+	src_path="$1"
+	if [ -f "${src_path}" ]; then
+		timestamp="$(date +%Y%m%d%H%M%S)"
+		backup_path="${src_path}.bak.${timestamp}"
+		backup_index=0
+		while [ -e "${backup_path}" ]; do
+			backup_index=$((backup_index + 1))
+			backup_path="${src_path}.bak.${timestamp}.${backup_index}"
+		done
+		cp -p "${src_path}" "${backup_path}"
+	fi
+}
 
-install -m 600 "${script_dir}/.gitconfig" "${HOME}/.gitconfig"
-install -m 600 "${script_dir}/.gitconfig.work" "${HOME}/.gitconfig.work"
+install_dotfile() {
+	name="$1"
+	backup_if_exists "${HOME}/${name}"
+	install -m 600 "${script_dir}/${name}" "${HOME}/${name}"
+}
+
+install_dotfile .gitconfig
+install_dotfile .gitconfig.work
+
+# Shell config depends on the OS
+case "$(uname -s)" in
+	Darwin)
+		install_dotfile .zshrc
+		install_dotfile .zprofile
+		;;
+	*)
+		install_dotfile .bashrc
+		;;
+esac
