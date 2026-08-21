@@ -3,8 +3,8 @@
 # If not running interactively, don't do anything
 [[ $- != *i* ]] && return
 
-# ---
-# Bash history
+## ---
+## Bash history
 
 HISTCONTROL=ignoreboth
 HISTFILE=~/.bash_history
@@ -20,48 +20,42 @@ shopt -s checkwinsize
 # Match all files and zero or more directories and subdirectories
 #shopt -s globstar
 
-# ---
-# Update PATH for custom binaries
+## ---
+## Update PATH for custom binaries
 
 if [ -d ~/bin ] ; then
-	export PATH='~/bin:'$PATH
-fi
-
-if [ -d ~/afs/bin ] ; then
-	export PATH='~/afs/bin:'$PATH
+	export PATH="${HOME}/bin:${PATH}"
 fi
 
 if [ -d ~/.local/bin ] ; then
-	export PATH='~/.local/bin:'$PATH
+	export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
-export LANG=en_US.utf8
-export NNTPSERVER="news.epita.fr"
+export LANG='en_US.UTF-8'
 
-# export EDITOR=vim
-# export EDITOR=emacs
+# export EDITOR='vim'
+# export EDITOR='emacs'
 
-# ---
-# Custom Prompt Strings
+## ---
+## Custom Prompt Strings
 
-PS0=''
 ps1_generator() {
 
 	PS1='${debian_chroot:+($debian_chroot) }'
 	PS1+='\[\e[1;30m\][ '
-	
+
 	# User
 	# PS1+='\[\e[1;36m\]\u\[\e[1;30m\]@\[\e[1;30m\]\h '
 	PS1+='\[\e[1;36m\]\u '
-	
+
 	# Time
 	PS1+='\[\e[0;33m\]\t '
-	
+
 	# Directory
 	PS1+='\[\e[1;33m\]\W '
 
 	if [[ -d .git || $(git rev-parse --abbrev-ref HEAD 2> /dev/null) ]]; then
-	
+
 		# Append git current branch
 		branch_name=$(git symbolic-ref -q HEAD)
 		branch_name=${branch_name##refs/heads/}
@@ -87,14 +81,14 @@ ps1_generator() {
 		# Trailing space
 		PS1+=' '
 	fi
-	
+
 	# ]$
 	PS1+='\[\e[1;30m\]]\$ \[\e[m\]'
 }
-PROMPT_COMMAND=ps1_generator
+PROMPT_COMMAND='ps1_generator'
 
-# ---
-# Color support
+## ---
+## Color support
 
 # Enable color support of ls
 # Add handy aliases
@@ -109,28 +103,15 @@ if [ -x /usr/bin/dircolors ]; then
 	alias egrep='egrep --color=auto'
 fi
 
-# Color support for less
-# export LESS_TERMCAP_mb=$'\E[01;31m'       # begin blinking
-# export LESS_TERMCAP_md=$'\E[01;38;5;74m'  # begin bold
-# export LESS_TERMCAP_me=$'\E[0m'           # end mode
-# export LESS_TERMCAP_se=$'\E[0m'           # end standout-mode
-# export LESS_TERMCAP_so=$'\E[38;5;246m'    # begin standout-mode - info box
-# export LESS_TERMCAP_ue=$'\E[0m'           # end underline
-# export LESS_TERMCAP_us=$'\E[04;38;5;146m' # begin underline
-
 # Custom ls colors
 export LS_COLORS=$LS_COLORS:'di=0;95:ex=0;92'
 
-# ---
-# Alias definitions
-
-# Git alias for managing dotfiles
-alias dotfiles='/usr/bin/git --git-dir="'$HOME'/.dotfiles/" --work-tree="'$HOME'"'
-alias gitdf='dotfiles'
+## ---
+## Alias definitions
 
 # Import aliases from .bash_aliases
-if [ -f ~/.bash_aliases ]; then
-	. ~/.bash_aliases
+if [ -f "${HOME}/.bash_aliases" ]; then
+	. "${HOME}/.bash_aliases"
 fi
 
 # Enable programmable completion features
@@ -141,6 +122,3 @@ if ! shopt -oq posix; then
 		. /etc/bash_completion
 	fi
 fi
-
-export PGDATA="$HOME/postgres_data"
-export PGHOST="/tmp"
