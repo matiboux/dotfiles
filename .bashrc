@@ -52,7 +52,7 @@ ps1_generator() {
 	PS1+='\[\e[1;36m\]\u '
 
 	# Time
-	PS1+='\[\e[0;33m\]\t '
+	PS1+='\[\e[0;90m\]\t '
 
 	# Directory
 	PS1+='\[\e[1;33m\]\W '
