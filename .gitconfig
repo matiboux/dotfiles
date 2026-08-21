@@ -1,6 +1,12 @@
+## ---
+## Identity
+
 [user]
 	name = Matiboux
 	email = matiboux@gmail.com
+
+## ---
+## Core behavior
 
 [core]
 	autocrlf = input
@@ -33,6 +39,9 @@
 [rebase]
 	autoSquash = true
 	autoStash = true
+
+## ---
+## Aliases
 
 [alias]
 	# Checkout
@@ -100,12 +109,6 @@
 	localpurge = "!f() { git branch -vv | grep 'origin/.*: gone]' | awk '{print $1}' | xargs git branch -d; }; f"
 	remotepurge = "!f() { git remote prune ${1:-origin}; }; f"
 
-# [filter "lfs"]
-# 	clean = git-lfs clean -- %f
-# 	smudge = git-lfs smudge -- %f
-# 	process = git-lfs filter-process
-# 	required = true
-
 ## ---
 ## Credential helpers
 
@@ -116,7 +119,6 @@
 [credential "https://gist.github.com"]
 	helper =
 	helper = !/usr/bin/gh auth git-credential
-
 
 ## ---
 ## Work identities
@@ -141,3 +143,13 @@
 	path = ~/.gitconfig.work
 [includeIf "hasconfig:remote.*.url:https://github.com/IA-Generative/**"]
 	path = ~/.gitconfig.work
+
+## ---
+## Disabled (opt-in)
+
+# Uncomment to enable Git LFS
+# [filter "lfs"]
+# 	clean = git-lfs clean -- %f
+# 	smudge = git-lfs smudge -- %f
+# 	process = git-lfs filter-process
+# 	required = true
