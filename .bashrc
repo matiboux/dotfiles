@@ -1,6 +1,6 @@
 # ~/.bashrc
 
-# If not running interactively, don't do anything
+# Skip processing if not running interactively
 case $- in
 	*i*) ;;
 	*) return ;;
