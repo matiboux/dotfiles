@@ -7,7 +7,7 @@
 ## Bash history
 
 HISTCONTROL=ignoreboth
-HISTFILE=~/.bash_history
+HISTFILE="${HOME}/.bash_history"
 HISTFILESIZE=2000
 HISTSIZE=1000
 
@@ -23,11 +23,11 @@ shopt -s checkwinsize
 ## ---
 ## Update PATH for custom binaries
 
-if [ -d ~/bin ] ; then
+if [ -d "${HOME}/bin" ] ; then
 	export PATH="${HOME}/bin:${PATH}"
 fi
 
-if [ -d ~/.local/bin ] ; then
+if [ -d "${HOME}/.local/bin" ] ; then
 	export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
@@ -60,12 +60,12 @@ ps1_generator() {
 		branch_name=$(git symbolic-ref -q HEAD)
 		branch_name=${branch_name##refs/heads/}
 		branch_name=${branch_name:-HEAD}
-		PS1+='\[\e[1;31m\]('$branch_name'\[\e[1;31m\])'
+		PS1+="\[\e[1;31m\](${branch_name}\[\e[1;31m\])"
 
 		# Append git status information
 		gitstatusshort=$(git status -s)
-		if [[ $gitstatusshort ]]; then
-			if [[ $(echo "$gitstatusshort" | grep '^[MARCD]') ]]; then
+		if [[ ${gitstatusshort} ]]; then
+			if [[ $(echo "${gitstatusshort}" | grep '^[MARCD]') ]]; then
 				PS1+='\[\e[1;32m\]'
 			else
 				PS1+='\[\e[1;33m\]'
@@ -93,7 +93,7 @@ PROMPT_COMMAND='ps1_generator'
 # Enable color support of ls
 # Add handy aliases
 if [ -x /usr/bin/dircolors ]; then
-	test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"
+	test -r "${HOME}/.dircolors" && eval "$(dircolors -b "${HOME}/.dircolors")" || eval "$(dircolors -b)"
 	alias ls='ls --color=auto'
 	alias dir='dir --color=auto'
 	alias vdir='vdir --color=auto'
@@ -104,7 +104,7 @@ if [ -x /usr/bin/dircolors ]; then
 fi
 
 # Custom ls colors
-export LS_COLORS=$LS_COLORS:'di=0;95:ex=0;92'
+export LS_COLORS="${LS_COLORS}:di=0;95:ex=0;92"
 
 ## ---
 ## Alias definitions
