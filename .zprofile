@@ -1,5 +1,4 @@
 # ~/.zprofile
-# Login shell setup for macOS (zsh)
 
 # Homebrew
 if [ -x /opt/homebrew/bin/brew ]; then
