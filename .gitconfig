@@ -1,27 +1,41 @@
-[core]
-	#excludesfile = ~/.gitignore
+
 [user]
 	name = Matiboux
 	email = matiboux@gmail.com
+
+[core]
+	#excludesfile = ~/.gitignore
+	autocrlf = input
+	symlinks = true
+
+[init]
+	defaultBranch = main
+
 [color]
 	ui = true
 	branch = auto
 	diff = auto
 	interactive = auto
 	status = auto
+
 [commit]
 	verbose = true
+
 [pull]
 	default = simple
 	rebase = true
+
 [push]
 	default = simple
+
 [branch]
 	autosetupmerge = always
 	autosetuprebase = always
+
 [rebase]
 	autoSquash = true
 	autoStash = true
+
 [alias]
 	# Checkout
 	co = checkout
@@ -89,3 +103,41 @@
 	# Purge
 	localpurge = "!f() { git branch -vv | grep 'origin/.*: gone]' | awk '{print $1}' | xargs git branch -d; }; f"
 	remotepurge = "!f() { git remote prune ${1:-origin}; }; f"
+
+[credential "https://github.com"]
+	helper =
+	helper = !/usr/bin/gh auth git-credential
+
+[credential "https://gist.github.com"]
+	helper =
+	helper = !/usr/bin/gh auth git-credential
+
+[includeIf "hasconfig:remote.*.url:git@gitlab.com:saegus/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:https://gitlab.com/saegus/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:git@github.com:Saegus/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:https://github.com/Saegus/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:git@github.com:Saegus-Data/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:https://github.com/Saegus-Data/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:git@github.com:IA-Generative/**"]
+	path = ~/.gitconfig.work
+
+[includeIf "hasconfig:remote.*.url:https://github.com/IA-Generative/**"]
+	path = ~/.gitconfig.work
+
+# [filter "lfs"]
+# 	clean = git-lfs clean -- %f
+# 	smudge = git-lfs smudge -- %f
+# 	process = git-lfs filter-process
+# 	required = true
