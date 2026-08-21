@@ -29,13 +29,15 @@ export LANG='en_US.UTF-8'
 ## ---
 ## Completion
 
-autoload -Uz compinit
-compinit
-
 # Docker CLI completions
+# The following lines have been added by Docker Desktop to enable Docker CLI completions.
 if [ -d "${HOME}/.docker/completions" ]; then
 	fpath=("${HOME}/.docker/completions" "${fpath[@]}")
 fi
+# End of Docker CLI completions
+
+autoload -Uz compinit
+compinit
 
 ## ---
 ## Custom prompt
