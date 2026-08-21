@@ -1,15 +1,18 @@
 # ~/.bashrc
 
 # If not running interactively, don't do anything
-[[ $- != *i* ]] && return
+case $- in
+	*i*) ;;
+	*) return ;;
+esac
 
 ## ---
 ## Bash history
 
-HISTCONTROL=ignoreboth
+HISTCONTROL='ignoreboth'
 HISTFILE="${HOME}/.bash_history"
-HISTFILESIZE=2000
-HISTSIZE=1000
+HISTFILESIZE='2000'
+HISTSIZE='1000'
 
 # Append to the history file, don't overwrite it
 shopt -s histappend
@@ -54,7 +57,7 @@ ps1_generator() {
 	# Directory
 	PS1+='\[\e[1;33m\]\W '
 
-	if [[ -d .git || $(git rev-parse --abbrev-ref HEAD 2> /dev/null) ]]; then
+	if [ -d .git ] || git rev-parse --abbrev-ref HEAD > /dev/null 2>&1; then
 
 		# Append git current branch
 		branch_name=$(git symbolic-ref -q HEAD)
@@ -64,8 +67,8 @@ ps1_generator() {
 
 		# Append git status information
 		gitstatusshort=$(git status -s)
-		if [[ ${gitstatusshort} ]]; then
-			if [[ $(echo "${gitstatusshort}" | grep '^[MARCD]') ]]; then
+		if [ -n "${gitstatusshort}" ]; then
+			if echo "${gitstatusshort}" | grep -q '^[MARCD]'; then
 				PS1+='\[\e[1;32m\]'
 			else
 				PS1+='\[\e[1;33m\]'
@@ -73,7 +76,7 @@ ps1_generator() {
 			# Modified files
 			PS1+='+'
 		fi
-		if [[ $(git log --branches --not --remotes) ]]; then
+		if [ -n "$(git log --branches --not --remotes)" ]; then
 			# Unsynced branches
 			PS1+='\[\e[1;33m\]*'
 		fi
