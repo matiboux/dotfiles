@@ -3,9 +3,10 @@ set -eu
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-backup_if_exists() {
+backup_if_different() {
 	src_path="$1"
-	if [ -f "${src_path}" ]; then
+	new_path="$2"
+	if [ -f "${src_path}" ] && ! cmp -s "${src_path}" "${new_path}"; then
 		timestamp="$(date +%Y%m%d%H%M%S)"
 		backup_path="${src_path}.bak.${timestamp}"
 		backup_index=0
@@ -19,7 +20,7 @@ backup_if_exists() {
 
 install_dotfile() {
 	name="$1"
-	backup_if_exists "${HOME}/${name}"
+	backup_if_different "${HOME}/${name}" "${script_dir}/${name}"
 	install -m 600 "${script_dir}/${name}" "${HOME}/${name}"
 }
 
