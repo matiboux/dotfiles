@@ -1,6 +1,0 @@
-#!/bin/sh
-set -eu
-
-# Run git-clean-synced-branches.sh script
-WORKDIR="$(dirname "$0")"
-"$WORKDIR/git-clean-synced-branches.sh"
