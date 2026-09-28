@@ -51,24 +51,24 @@ prompt_git_status() {
 	prompt_git_ahead=0
 	local git_status line record_kind xy_status remainder ahead behind index_status worktree_status
 
-	if git_status=$(git status --porcelain=v2 --branch 2> /dev/null); then
+	if git_status="$(git status --porcelain=v2 --branch 2> /dev/null)"; then
 		while IFS= read -r line; do
 			case "${line}" in
 				'# branch.head '*)
-					prompt_git_branch=${line#'# branch.head '}
+					prompt_git_branch="${line#'# branch.head '}"
 					[ "${prompt_git_branch}" = '(detached)' ] && prompt_git_branch='HEAD'
 					;;
 				'# branch.ab '*)
 					read -r record_kind remainder ahead behind <<< "${line}"
-					ahead=${ahead#+}
+					ahead="${ahead#+}"
 					if [ "${ahead}" -gt 0 ] 2> /dev/null; then
 						prompt_git_ahead=1
 					fi
 					;;
 				'1 '*|'2 '*|'u '*)
 					read -r record_kind xy_status remainder <<< "${line}"
-					index_status=${xy_status%?}
-					worktree_status=${xy_status#?}
+					index_status="${xy_status%?}"
+					worktree_status="${xy_status#?}"
 					[ "${index_status}" = '.' ] || prompt_git_staged=1
 					[ "${worktree_status}" = '.' ] || prompt_git_unstaged=1
 					;;
