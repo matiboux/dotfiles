@@ -94,12 +94,12 @@ precmd() {
 		if [ "${prompt_git_ahead}" -eq 1 ]; then
 			prompt_git_info+='%F{yellow}^'
 		fi
-		prompt_git_info+='%F{red})'
+		prompt_git_info+='%F{red})%F{black} '
 	fi
 }
 
 # [ user time dir (branch+) ]$
-PROMPT='%F{black}[ %F{cyan}%n %F{8}%* %F{yellow}%1~ ${prompt_git_info}${prompt_git_info:+ }%F{black}]%(!.#.$) %f'
+PROMPT='%F{black}[ %F{cyan}%n %F{8}%* %F{yellow}%1~ ${prompt_git_info}%F{black}]%(!.#.$) %f'
 
 ## ---
 ## Color support
