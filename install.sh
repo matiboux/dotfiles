@@ -24,8 +24,19 @@ install_dotfile() {
 	install -m 600 "${script_dir}/${name}" "${HOME}/${name}"
 }
 
+install_binaries() {
+	bin_dir="${HOME}/.local/bin"
+	mkdir -p "${bin_dir}"
+	for binary_path in "${script_dir}"/bin/*; do
+		name="${binary_path##*/}"
+		backup_if_different "${bin_dir}/${name}" "${binary_path}"
+		install -m 755 "${binary_path}" "${bin_dir}/${name}"
+	done
+}
+
 install_dotfile .gitconfig
 install_dotfile .gitconfig.work
+install_binaries
 
 # Shell config depends on the OS
 case "$(uname -s)" in
