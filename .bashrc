@@ -106,12 +106,10 @@ ps1_generator() {
 			PS1+='\[\e[1;33m\]^'
 		fi
 		PS1+='\[\e[1;31m\])'
-		# Trailing space
-		PS1+=' '
 	fi
 
 	# ]$
-	PS1+='\[\e[1;30m\]]\$ \[\e[m\]'
+	PS1+='\[\e[1;30m\] ]\$ \[\e[m\]'
 }
 PROMPT_COMMAND='ps1_generator'
 
