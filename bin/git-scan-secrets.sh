@@ -48,9 +48,8 @@ while [ "$#" -gt 0 ]; do
 	shift
 done
 
-current_dir="${0%/*}"
-[ "${current_dir}" = "$0" ] && current_dir='.'
-repo_dir="$(CDPATH= cd -- "${current_dir}/.." && pwd)"
+WORKING_DIR="${WORKING_DIR:-$(pwd)}"
+repo_dir="$(CDPATH= cd -- "${WORKING_DIR}" && pwd)"
 
 baseline_path="${SECRETS_SCAN_BASELINE_PATH:-}"
 [ -z "${baseline_path}" ] && baseline_path='.gitleaks-baseline.json'
