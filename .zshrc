@@ -43,34 +43,63 @@ compinit
 ## Custom prompt
 
 setopt PROMPT_SUBST
-autoload -Uz vcs_info
-zstyle ':vcs_info:git:*' formats '(%b)%u%c%m'
-zstyle ':vcs_info:*' check-for-changes true
-zstyle ':vcs_info:*' unstagedstr '%F{yellow}*'
-zstyle ':vcs_info:*' stagedstr '%F{green}+'
 
-zstyle ':vcs_info:git*+set-message:*' hooks git-untracked git-unpushed
+prompt_git_status() {
+	prompt_git_branch=''
+	prompt_git_unstaged=0
+	prompt_git_staged=0
+	prompt_git_ahead=0
+	local git_status line record_kind xy_status remainder ahead behind index_status worktree_status
 
-# Also treat untracked files as unstaged changes, like VS Code does
-+vi-git-untracked() {
-	if [ -n "$(git status --porcelain 2> /dev/null | grep -m 1 '^??')" ]; then
-		hook_com[unstaged]='%F{yellow}*'
-	fi
-}
-
-# Flag unpushed commits (branches with commits not on any remote)
-+vi-git-unpushed() {
-	if [ -n "$(git log --branches --not --remotes 2> /dev/null)" ]; then
-		hook_com[misc]='%F{yellow}^'
+	if git_status=$(git status --porcelain=v2 --branch 2> /dev/null); then
+		while IFS= read -r line; do
+			case "${line}" in
+				'# branch.head '*)
+					prompt_git_branch=${line#'# branch.head '}
+					[ "${prompt_git_branch}" = '(detached)' ] && prompt_git_branch='HEAD'
+					;;
+				'# branch.ab '*)
+					read -r record_kind remainder ahead behind <<< "${line}"
+					ahead=${ahead#+}
+					if [ "${ahead}" -gt 0 ] 2> /dev/null; then
+						prompt_git_ahead=1
+					fi
+					;;
+				'1 '*|'2 '*|'u '*)
+					read -r record_kind xy_status remainder <<< "${line}"
+					index_status=${xy_status%?}
+					worktree_status=${xy_status#?}
+					[ "${index_status}" = '.' ] || prompt_git_staged=1
+					[ "${worktree_status}" = '.' ] || prompt_git_unstaged=1
+					;;
+				'? '*)
+					prompt_git_unstaged=1
+					;;
+			esac
+		done <<< "${git_status}"
 	fi
 }
 
 precmd() {
-	vcs_info
+	prompt_git_status
+	prompt_git_info=''
+	if [ -n "${prompt_git_branch}" ]; then
+		prompt_git_info="%F{red}(${prompt_git_branch}"
+		if [ "${prompt_git_unstaged}" -eq 1 ]; then
+			prompt_git_info+='%F{yellow}*'
+		fi
+		if [ "${prompt_git_staged}" -eq 1 ]; then
+			prompt_git_info+='%F{green}+'
+		fi
+		if [ "${prompt_git_ahead}" -eq 1 ]; then
+			prompt_git_info+='%F{yellow}^'
+		fi
+		prompt_git_info+='%F{red})%F{black} '
+	fi
 }
 
 # [ user time dir (branch+) ]$
-PROMPT='%F{black}[ %F{cyan}%n %F{8}%* %F{yellow}%1~ %F{red}${vcs_info_msg_0_}%F{black}]%(!.#.$) %f'
+PROMPT='%F{black}[ %F{cyan}%n %F{8}%* %F{yellow}%1~ ${prompt_git_info}%F{black}]%(!.#.$) %f'
 
 ## ---
 ## Color support
