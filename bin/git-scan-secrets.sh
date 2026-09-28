@@ -73,7 +73,7 @@ fi
 
 if command -v gitleaks >/dev/null 2>&1; then
 	run_gitleaks() {
-		gitleaks git "${repo_dir}" --no-banner ${host_args}
+		gitleaks detect --source "${repo_dir}" --no-banner ${host_args}
 	}
 elif command -v docker >/dev/null 2>&1; then
 	docker_image="zricethezav/gitleaks:${gitleaks_image_tag}"
@@ -83,7 +83,7 @@ elif command -v docker >/dev/null 2>&1; then
 				-e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
 				-v "${repo_dir}:/repo" \
 				"${docker_image}" \
-				git /repo --no-banner ${container_args}
+				detect --source /repo --no-banner ${container_args}
 		}
 	else
 		# Bind mount is not available, so we stream an archive of the repo
@@ -92,7 +92,7 @@ elif command -v docker >/dev/null 2>&1; then
 			run_gitleaks() {
 				local container_id="$(
 					docker create -i --entrypoint sh "${docker_image}" \
-						-c "mkdir -p /repo && tar -xf - -C /repo && gitleaks git /repo --no-banner ${container_args}"
+						-c "mkdir -p /repo && tar -xf - -C /repo && gitleaks detect --source /repo --no-banner ${container_args}"
 				)"
 				[ -z "${container_id}" ] && return 2
 				tar -cf - -C "${repo_dir}" . | docker start -ai "${container_id}"
@@ -115,7 +115,7 @@ elif command -v docker >/dev/null 2>&1; then
 				| docker run --rm -i \
 					--entrypoint sh \
 					"${docker_image}" \
-					-c "mkdir -p /repo && tar -xf - -C /repo && gitleaks git /repo --no-banner ${container_args}"
+					-c "mkdir -p /repo && tar -xf - -C /repo && gitleaks detect --source /repo --no-banner ${container_args}"
 			}
 		fi
 	fi
