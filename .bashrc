@@ -105,11 +105,11 @@ ps1_generator() {
 		if [ "${prompt_git_ahead}" -eq 1 ]; then
 			PS1+='\[\e[1;33m\]^'
 		fi
-		PS1+='\[\e[1;31m\])'
+		PS1+='\[\e[1;31m\])\[\e[1;30m\] '
 	fi
 
 	# ]$
-	PS1+='\[\e[1;30m\] ]\$ \[\e[m\]'
+	PS1+='\[\e[1;30m\]]\$ \[\e[m\]'
 }
 PROMPT_COMMAND='ps1_generator'
 
