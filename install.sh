@@ -29,19 +29,22 @@ install_binaries() {
 	mkdir -p "${bin_dir}"
 	for binary_path in "${script_dir}"/bin/*; do
 		name="${binary_path##*/}"
-		# Symlinked so that the script can locate the dotfiles repo
-		if [ "${name}" = 'dotfiles-update' ]; then
-			ln -sf "${binary_path}" "${bin_dir}/${name}"
-			continue
-		fi
 		backup_if_different "${bin_dir}/${name}" "${binary_path}"
 		install -m 755 "${binary_path}" "${bin_dir}/${name}"
 	done
 }
 
+# Symlinked so that the script can locate the dotfiles repo
+install_update_script() {
+	bin_dir="${HOME}/.local/bin"
+	mkdir -p "${bin_dir}"
+	ln -sf "${script_dir}/update.sh" "${bin_dir}/dotfiles-update"
+}
+
 install_dotfile .gitconfig
 install_dotfile .gitconfig.work
 install_binaries
+install_update_script
 
 # Shell config depends on the OS
 case "$(uname -s)" in

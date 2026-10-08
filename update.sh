@@ -1,7 +1,7 @@
 #!/bin/sh
 # Pull the latest changes of the dotfiles git repo and reinstall the dotfiles.
 #
-# Usage: dotfiles-update [-h|--help]
+# Usage: update.sh [-h|--help]
 #
 # The repo is updated with a fast-forward only pull, then its install.sh script
 # is run. The repo must have a clean working directory.
@@ -11,7 +11,7 @@
 #
 # Environment:
 # - DOTFILES_DIR: directory of the dotfiles git repo.
-#   (default: parent directory of this script, once symlinks are resolved)
+#   (default: directory of this script, once symlinks are resolved)
 set -eu
 
 # Resolve symlinks (the installed script is a symlink to the repo script)
@@ -24,7 +24,7 @@ while [ -L "${script_path}" ]; do
 	esac
 done
 
-DOTFILES_DIR="${DOTFILES_DIR:-$(CDPATH= cd -- "$(dirname -- "${script_path}")/.." && pwd)}"
+DOTFILES_DIR="${DOTFILES_DIR:-$(CDPATH= cd -- "$(dirname -- "${script_path}")" && pwd)}"
 
 usage() {
 	echo "Usage: ${0##*/} [-h|--help]"
