@@ -11,10 +11,20 @@
 #
 # Environment:
 # - DOTFILES_DIR: directory of the dotfiles git repo.
-#   (default: ~/Perso/dotfiles)
+#   (default: parent directory of this script, once symlinks are resolved)
 set -eu
 
-DOTFILES_DIR="${DOTFILES_DIR:-${HOME}/Perso/dotfiles}"
+# Resolve symlinks (the installed script is a symlink to the repo script)
+script_path="$0"
+while [ -L "${script_path}" ]; do
+	link_target="$(readlink "${script_path}")"
+	case "${link_target}" in
+		/*) script_path="${link_target}" ;;
+		*) script_path="$(dirname -- "${script_path}")/${link_target}" ;;
+	esac
+done
+
+DOTFILES_DIR="${DOTFILES_DIR:-$(CDPATH= cd -- "$(dirname -- "${script_path}")/.." && pwd)}"
 
 usage() {
 	echo "Usage: ${0##*/} [-h|--help]"
