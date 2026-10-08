@@ -14,8 +14,9 @@
 # are never deleted.
 #
 # The current branch is deleted last, after switching to the first primary branch
-# found. If it is synced, it is kept as long as a remote branch still points to
-# its commit. Deleted branches are recreated on checkout when needed.
+# found. If it is synced, it is kept as long as it is still synced after pruning
+# (a remote branch still points to its commit). Deleted branches are recreated on
+# checkout when needed.
 #
 # Options:
 # - -h, --help: show usage.
@@ -77,11 +78,16 @@ git_repo() {
 	git -C "${WORKING_DIR}" "$@"
 }
 
+deleted_count=0
+kept_count=0
+
 # Delete a local branch with the given git branch flag (-d or -D).
 delete_branch() {
 	if git_repo branch "$1" "$2" >/dev/null 2>&1; then
+		deleted_count=$((deleted_count + 1))
 		echo " * Deleted local branch '$2'."
 	else
+		kept_count=$((kept_count + 1))
 		echo " * ⚠️  Kept local branch '$2': not fully merged, delete it manually with git branch -D"
 	fi
 }
@@ -143,17 +149,19 @@ EOF
 if [ -z "${candidates}" ]; then
 	echo 'ℹ️  No local branch to delete.'
 else
-	echo 'The following local branches will be deleted (gone ones only if fully merged):'
+	echo 'The following local branches will be deleted:'
 	while read -r kind branch; do
+		label="${kind}"
+		[ "${kind}" = 'gone' ] && label='gone, only if fully merged'
 		note=''
 		if [ "${branch}" = "${current_branch}" ]; then
 			if [ "${kind}" = 'synced' ]; then
-				note=' (current branch, only if no remote branch points to its commit)'
+				note=' (current branch, only if no longer synced after pruning)'
 			else
 				note=' (current branch, after switching to a primary branch)'
 			fi
 		fi
-		echo "  - ${branch} [${kind}]${note}"
+		echo "  - ${branch} [${label}]${note}"
 	done <<EOF
 ${candidates}
 EOF
@@ -183,7 +191,7 @@ EOF
 	done <<EOF
 ${candidates}
 EOF
-	echo '✅ Cleaned up local branches.'
+	echo "✅ Local branches deleted: ${deleted_count}, kept: ${kept_count}."
 fi
 
 # ---
@@ -211,7 +219,7 @@ echo '✅ Pruned all remote-tracking branches.'
 if [ "${current_kind}" = 'synced' ]; then
 	current_commit="$(git_repo rev-parse "refs/heads/${current_branch}")"
 	if git_repo for-each-ref --format='%(objectname)' refs/remotes/ | grep -q "^${current_commit}$"; then
-		echo "ℹ️  Current branch '${current_branch}' not deleted as it still exists on remote."
+		echo "ℹ️  Current branch '${current_branch}' not deleted as it is still synced with a remote branch."
 		exit 0
 	fi
 fi
