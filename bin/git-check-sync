@@ -2,7 +2,7 @@
 # List the local branches of the git repo in the current directory that are not
 # in sync with a remote.
 #
-# Usage: git-check-sync.sh [-f|--fetch] [-h|--help]
+# Usage: git-check-sync [-f|--fetch] [-h|--help]
 #
 # A local branch is compared with its upstream branch or, if it has none, with
 # the first remote branch of the same name. Reported states:

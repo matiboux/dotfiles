@@ -2,11 +2,11 @@
 # Delete the local branches of the git repo in the current directory that are
 # synced with a remote or gone from it, and prune stale remote-tracking branches.
 #
-# Usage: git-clean-synced-branches.sh [-h|--help] [-n|--dry-run] [-y|--yes]
+# Usage: git-clean-synced-branches [-h|--help] [-n|--dry-run] [-y|--yes]
 #
 # Remotes are fetched first. A local branch is compared with its upstream branch
 # or, if it has none, with the first remote branch of the same name (same as
-# git-check-sync.sh). Branches handled:
+# git-check-sync). Branches handled:
 # - synced: same commit as the remote branch, so nothing is lost. Force-deleted.
 # - gone: the upstream branch no longer exists on the remote. Deleted only if
 #   fully merged into the current branch (git branch -d), else kept.
