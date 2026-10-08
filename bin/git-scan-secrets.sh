@@ -1,11 +1,16 @@
 #!/bin/sh
 # Scan for secrets with gitleaks (the binary if in PATH, else the docker image).
 #
-# Usage: git-scan-secrets.sh [-u|--update-baseline] [-s|--stateless]
+# Usage: git-scan-secrets.sh [-h|--help] [-s|--stateless] [-u|--update-baseline]
 #
-# By default scans the full git history; -s/--stateless scans only the working
-# directory. -u/--update-baseline regenerates the baseline from current findings:
-# review the diff before committing, it accepts everything present, real secrets included.
+# By default, scans the full git history.
+#
+# Options:
+# - -h, --help: show usage.
+# - -s, --stateless: scan only the working directory (no git history).
+# - -u, --update-baseline: regenerate the baseline from current findings.
+#   Review the diff before committing it: it accepts everything present,
+#   real secrets included.
 #
 # Environment:
 # - SECRETS_SCAN_BASELINE_PATH: optional gitleaks baseline (relative to the repo root) of
@@ -19,7 +24,7 @@ mode='scan'
 scan_target='git'
 
 usage() {
-	echo "Usage: ${0##*/} [-u|--update-baseline] [-s|--stateless]"
+	echo "Usage: ${0##*/} [-h|--help] [-s|--stateless] [-u|--update-baseline]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -29,11 +34,11 @@ while [ "$#" -gt 0 ]; do
 			usage
 			exit 0
 			;;
-		-u|--update-baseline)
-			mode='update-baseline'
-			;;
 		-s|--stateless)
 			scan_target='dir'
+			;;
+		-u|--update-baseline)
+			mode='update-baseline'
 			;;
 		--)
 			;;
