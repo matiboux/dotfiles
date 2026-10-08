@@ -1,31 +1,25 @@
 #!/bin/sh
-# Scan for committed secrets across the full git history, using gitleaks
-# (https://github.com/gitleaks/gitleaks).
+# Scan for secrets with gitleaks (the binary if in PATH, else the docker image).
 #
-# Usage: check_secrets_scan.sh [-u|--update-baseline]
+# Usage: git-scan-secrets.sh [-u|--update-baseline] [-s|--stateless]
 #
-# If found in PATH, the `gitleaks` binary is used directly. Otherwise, a docker
-# fallback is used (zricethezav/gitleaks image).
+# By default scans the full git history; -s/--stateless scans only the working
+# directory. -u/--update-baseline regenerates the baseline from current findings:
+# review the diff before committing, it accepts everything present, real secrets included.
 #
-# SECRETS_SCAN_BASELINE_PATH sets the path to an optional gitleaks baseline
-# file (relative to the repo root). The baseline can capture known false
-# positives already reviewed manually (e.g. well-known test tokens, etc.).
-# This allows the scan to fail only on new findings (absent from the baseline)
-# so that a real secret introduced in a future commit would still be detected.
-#
-# SECRETS_SCAN_GITLEAKS_IMAGE_TAG sets the tag of the zricethezav/gitleaks
-# image used by the docker fallback. Default is 'latest'.
-#
-# Option -u, --update-baseline (re)generates the baseline file from the
-# findings currently present in the repo, instead of scanning against it. ALWAYS
-# review the diff before committing it: this accepts silently everything
-# present at run time, including any real secret lying around.
+# Environment:
+# - SECRETS_SCAN_BASELINE_PATH: optional gitleaks baseline (relative to the repo root) of
+#   reviewed false positives, so only new findings fail. Always excluded from the scan.
+# - SECRETS_SCAN_ALLOWLIST_REGEXES: comma-separated regexes to always ignore, added to the
+#   default that matches placeholder names like SECRET_API_KEY.
+# - SECRETS_SCAN_GITLEAKS_IMAGE_TAG: tag of the zricethezav/gitleaks image (default: latest).
 set -u
 
 mode='scan'
+scan_target='git'
 
 usage() {
-	echo "Usage: ${0##*/} [-u|--update-baseline]"
+	echo "Usage: ${0##*/} [-u|--update-baseline] [-s|--stateless]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -37,6 +31,9 @@ while [ "$#" -gt 0 ]; do
 			;;
 		-u|--update-baseline)
 			mode='update-baseline'
+			;;
+		-s|--stateless)
+			scan_target='dir'
 			;;
 		--)
 			;;
@@ -59,46 +56,91 @@ has_baseline='false'
 gitleaks_image_tag="${SECRETS_SCAN_GITLEAKS_IMAGE_TAG:-}"
 [ -z "${gitleaks_image_tag}" ] && gitleaks_image_tag='latest'
 
+# Escape a string for use inside a TOML/regex literal.
+escape_regex() {
+	printf '%s' "$1" | sed -e 's/[.[\*^$()+?{}|\\]/\\&/g'
+}
+
+# The baseline stores raw matches, so scanning it would report every baselined finding again.
+baseline_path_regex="$(escape_regex "${baseline_path}")"
+
+# A baseline entry can't cover placeholders in `dir` scans: its fingerprint is
+# commit-based, while `dir` fingerprints are path-based.
+allowlist_regexes="${SECRETS_SCAN_ALLOWLIST_REGEXES:-(SECRET|TEST|YOUR)_(CLIENT|API)_(SECRET|KEY|TOKEN)}"
+allowlist_regexes_toml=''
+old_ifs="${IFS}"
+IFS=','
+for pattern in ${allowlist_regexes}; do
+	[ -z "${pattern}" ] && continue
+	allowlist_regexes_toml="${allowlist_regexes_toml}'''${pattern}''', "
+done
+IFS="${old_ifs}"
+
+gitleaks_config_content="$(cat <<EOF
+[extend]
+useDefault = true
+
+[allowlist]
+paths = ['''${baseline_path_regex}''']
+regexes = [${allowlist_regexes_toml}]
+EOF
+)"
+gitleaks_config_b64="$(printf '%s' "${gitleaks_config_content}" | base64 | tr -d '\n')"
+
+gitleaks_config_file=''
+cleanup() {
+	[ -n "${gitleaks_config_file}" ] && rm -f "${gitleaks_config_file}"
+}
+trap cleanup EXIT
+
 # Gitleaks arguments
 if [ "${mode}" = 'update-baseline' ]; then
 	host_args="--report-format json --report-path ${repo_dir}/${baseline_path}"
 	container_args="--report-format json --report-path /repo/${baseline_path}"
 elif [ "${has_baseline}" = 'true' ]; then
-	host_args="--baseline-path ${repo_dir}/${baseline_path}"
-	container_args="--baseline-path /repo/${baseline_path}"
+	host_args="--baseline-path ${repo_dir}/${baseline_path} --verbose"
+	container_args="--baseline-path /repo/${baseline_path} --verbose"
 else
-	host_args=''
-	container_args=''
+	host_args='--verbose'
+	container_args='--verbose'
 fi
 
 if command -v gitleaks >/dev/null 2>&1; then
+	gitleaks_config_file="$(mktemp)"
+	printf '%s\n' "${gitleaks_config_content}" > "${gitleaks_config_file}"
+	host_args="${host_args} --config ${gitleaks_config_file}"
 	run_gitleaks() {
-		gitleaks detect --source "${repo_dir}" --no-banner ${host_args}
+		gitleaks "${scan_target}" "${repo_dir}" --no-banner ${host_args}
 	}
 elif command -v docker >/dev/null 2>&1; then
 	docker_image="zricethezav/gitleaks:${gitleaks_image_tag}"
 	if docker run --rm -v "${repo_dir}:/probe" --entrypoint sh "${docker_image}" -c 'test -d /probe/.git' >/dev/null 2>&1; then
+		gitleaks_config_file="$(mktemp)"
+		printf '%s\n' "${gitleaks_config_content}" > "${gitleaks_config_file}"
+		container_args="${container_args} --config /gitleaks.toml"
 		run_gitleaks() {
 			docker run --rm \
 				-e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
 				-v "${repo_dir}:/repo" \
+				-v "${gitleaks_config_file}:/gitleaks.toml:ro" \
 				"${docker_image}" \
-				detect --source /repo --no-banner ${container_args}
+				"${scan_target}" /repo --no-banner ${container_args}
 		}
 	else
 		# Bind mount is not available, so we stream an archive of the repo
-		# directory to the container and use it for the scan.
+		# directory to the container and use it for the scan. The gitleaks
+		# config is embedded as base64 since it cannot be bind-mounted here.
 		if [ "${mode}" = 'update-baseline' ]; then
 			run_gitleaks() {
 				local container_id="$(
 					docker create -i --entrypoint sh "${docker_image}" \
-						-c "mkdir -p /repo && tar -xf - -C /repo && gitleaks detect --source /repo --no-banner ${container_args}"
+						-c "mkdir -p /repo && tar -xf - -C /repo && printf '%s' '${gitleaks_config_b64}' | base64 -d > /tmp/gitleaks.toml && gitleaks ${scan_target} /repo --no-banner --config /tmp/gitleaks.toml ${container_args}"
 				)"
 				[ -z "${container_id}" ] && return 2
 				tar -cf - -C "${repo_dir}" . | docker start -ai "${container_id}"
 				local gitleaks_rc=$?
-				local gitleaks_baseline="$(mktemp)"
 				[ "${gitleaks_rc}" -ge 2 ] && return "${gitleaks_rc}"
+				local gitleaks_baseline="$(mktemp)"
 				docker cp "${container_id}:/repo/${baseline_path}" "${gitleaks_baseline}" > /dev/null 2>&1
 				if [ $? -eq 0 ]; then
 					mv "${gitleaks_baseline}" "${repo_dir}/${baseline_path}" > /dev/null 2>&1
@@ -115,7 +157,7 @@ elif command -v docker >/dev/null 2>&1; then
 				| docker run --rm -i \
 					--entrypoint sh \
 					"${docker_image}" \
-					-c "mkdir -p /repo && tar -xf - -C /repo && gitleaks detect --source /repo --no-banner ${container_args}"
+					-c "mkdir -p /repo && tar -xf - -C /repo && printf '%s' '${gitleaks_config_b64}' | base64 -d > /tmp/gitleaks.toml && gitleaks ${scan_target} /repo --no-banner --config /tmp/gitleaks.toml ${container_args}"
 			}
 		fi
 	fi
@@ -124,7 +166,11 @@ else
 	exit 0
 fi
 
-echo 'Scanning for committed secrets in git repo history...'
+if [ "${scan_target}" = 'dir' ]; then
+	echo 'Scanning for secrets in workdir (stateless, no git history)...'
+else
+	echo 'Scanning for committed secrets in git repo history...'
+fi
 
 echo ''
 if [ "${mode}" = 'update-baseline' ]; then
@@ -149,8 +195,8 @@ if [ "${mode}" = 'update-baseline' ]; then
 	exit 0
 fi
 if [ "${gitleaks_rc}" -ne 0 ]; then
-	echo '❌ New secrets found in git repo history'
+	echo '❌ New secrets found'
 else
-	echo '✅ No new secrets found in git repo history'
+	echo '✅ No new secrets found'
 fi
 exit "${gitleaks_rc}"
