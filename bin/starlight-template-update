@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 set -e
 
-if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
 	echo "Usage: $(basename "$0") <first_path> <second_path>"
 	echo "Compares two paths and prints the differences."
 	exit 0
@@ -42,6 +42,7 @@ EOF
 
 TEMPLATE_PATH=''
 ERR_FILE=''
+SED_FILE=''
 
 cleanup_trap() {
 	if [ -n "${TEMPLATE_PATH}" ] && [ "${TEMPLATE_PATH#/tmp}" != "${TEMPLATE_PATH}" ]; then
@@ -49,6 +50,9 @@ cleanup_trap() {
 	fi
 	if [ -n "${ERR_FILE}" ] && [ "${ERR_FILE#/tmp}" != "${ERR_FILE}" ]; then
 		rm -f -- "${ERR_FILE}"
+	fi
+	if [ -n "${SED_FILE}" ] && [ "${SED_FILE#/tmp}" != "${SED_FILE}" ]; then
+		rm -f -- "${SED_FILE}"
 	fi
 }
 
@@ -164,15 +168,16 @@ echo '✅  Cloned Starlight template repository.'
 # ---
 
 sanitize_sed_part() {
-	echo "$1" | sed -E 's/([\/&])/\\\1/g'
+	echo "$1" | sed 's/\([\/&]\)/\\\1/g'
 }
-SED_ARGS=()
-[ -n "${GITHUB_REPO_PATH}" ] && SED_ARGS+=( -e "s/matiboux\/starlight-template/$(sanitize_sed_part "${GITHUB_REPO_PATH}")/g" )
-[ -n "${SITE_TITLE}" ] && SED_ARGS+=( -e "s/Starlight Template/$(sanitize_sed_part "${SITE_TITLE}")/g" )
-[ -n "${PROJECT_SLUG}" ] && SED_ARGS+=( -e "s/starlight-template/$(sanitize_sed_part "${PROJECT_SLUG}")/g" )
+SED_FILE="$(mktemp)"
 
-if [ ${#SED_ARGS[@]} -gt 0 ]; then
-	while IFS= read -r -d '' file; do
+[ -n "${GITHUB_REPO_PATH}" ] && printf 's/%s/%s/g\n' 'matiboux\/starlight-template' "$(sanitize_sed_part "${GITHUB_REPO_PATH}")" >> "${SED_FILE}"
+[ -n "${SITE_TITLE}" ] && printf 's/%s/%s/g\n' 'Starlight Template' "$(sanitize_sed_part "${SITE_TITLE}")" >> "${SED_FILE}"
+[ -n "${PROJECT_SLUG}" ] && printf 's/%s/%s/g\n' 'starlight-template' "$(sanitize_sed_part "${PROJECT_SLUG}")" >> "${SED_FILE}"
+
+if [ -s "${SED_FILE}" ]; then
+	find "${TEMPLATE_PATH}" -type f | while IFS= read -r file; do
 
 		# Skip binary files (e.g. images)
 		if ! LC_ALL=C grep -Iq . "${file}"; then
@@ -184,7 +189,7 @@ if [ ${#SED_ARGS[@]} -gt 0 ]; then
 			exit 1
 		}
 
-		env LC_ALL=C sed "${SED_ARGS[@]}" -- "${file}" > "${update_file}" || {
+		env LC_ALL=C sed -f "${SED_FILE}" -- "${file}" > "${update_file}" || {
 			echo "❌  Failed to update file '${file}'."
 			rm -f -- "${update_file}"
 			exit 1
@@ -196,7 +201,7 @@ if [ ${#SED_ARGS[@]} -gt 0 ]; then
 		# Replace original file with updated file
 		mv "${update_file}" "${file}"
 
-	done < <(find "${TEMPLATE_PATH}" -type f -print0)
+	done
 fi
 
 echo '✅  Updated template files with project information.'
