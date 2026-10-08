@@ -1,34 +1,33 @@
 #!/bin/sh
-set -e
-
-if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
-	echo "Usage: $(basename "$0") <first_path> <second_path>"
-	echo "Compares two paths and prints the differences."
-	exit 0
-fi
-
-PROJECT_PATH="$1"
-if [ -z "$PROJECT_PATH" ]; then
-	# Use the current directory if no path is provided
-	PROJECT_PATH="$(pwd)"
-fi
-
-APP_DIR="$2"
-if [ -z "$APP_DIR" ]; then
-	# Use the default app directory if no second path is provided
-	APP_DIR='app'
-fi
-
-# ---
+# Update the Astro template files of a project from the latest astro-template
+# repository, on a dedicated update branch.
+#
+# Usage: astro-template-update [-h|--help] [<project_path> [<app_dir>]]
+#
+# The update branch (feat/update-astro-template) is created from the current branch if it is a
+# primary branch (dev, staging, main, master), else from the first remote-tracking
+# primary branch found. The template is cloned, customized with the project
+# information (slug, site title, GitHub repository), then copied to the project.
+# The template commit hash is committed in <app_dir>/.astro-template.
+#
+# Arguments:
+# - <project_path>: path of the project to update.
+#   (default: WORKING_DIR)
+# - <app_dir>: app directory, relative to the project path.
+#   (default: app)
+#
+# Options:
+# - -h, --help: show usage.
+#
+# Environment:
+# - WORKING_DIR: directory of the project, if no project path is given.
+#   (default: shell current directory)
+set -eu
 
 # Script inputs:
 DEFAULT_GIT_REMOTE='origin'
-DEFAULT_GIT_BRANCH='dev'
 UPDATE_GIT_BRANCH='feat/update-astro-template'
-
-if [ -z "${WORKING_DIR}" ]; then
-  WORKING_DIR="$(pwd)"
-fi
+APP_DIR='app'
 
 PRIMARY_GIT_BRANCHES="$(cat <<EOF
 dev
@@ -37,6 +36,47 @@ main
 master
 EOF
 )"
+
+usage() {
+	echo "Usage: ${0##*/} [-h|--help] [<project_path> [<app_dir>]]"
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-h|--help)
+			usage
+			exit 0
+			;;
+		--)
+			shift
+			break
+			;;
+		-*)
+			usage >&2
+			exit 1
+			;;
+		*)
+			break
+			;;
+	esac
+done
+
+if [ "$#" -gt 2 ]; then
+	usage >&2
+	exit 1
+fi
+
+WORKING_DIR="${1:-${WORKING_DIR:-$(pwd)}}"
+APP_DIR="${2:-${APP_DIR}}"
+
+if ! git -C "${WORKING_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+	echo "❌ Not a git repository: ${WORKING_DIR}" >&2
+	exit 2
+fi
+
+git_repo() {
+	git -C "${WORKING_DIR}" "$@"
+}
 
 # ---
 
@@ -64,51 +104,51 @@ sanitize_err() {
 
 # ---
 
-CURRENT_BRANCH="$(git -C "${PROJECT_PATH}" branch --show-current)"
+CURRENT_BRANCH="$(git_repo branch --show-current)"
 
 if [ "${CURRENT_BRANCH}" = "${UPDATE_GIT_BRANCH}" ]; then
 
-	echo '✅  Already on update branch '${UPDATE_GIT_BRANCH}'.'
+	echo "✅ Already on update branch '${UPDATE_GIT_BRANCH}'."
 
 else
 
 	# Check if the working directory is clean
-	if [ -n "$(git -C "${PROJECT_PATH}" status --porcelain)" ]; then
-		echo '❌  Working directory is not clean. Please commit or stash your changes before running this script.'
+	if [ -n "$(git_repo status --porcelain)" ]; then
+		echo '❌ Working directory is not clean. Please commit or stash your changes before running this script.'
 		exit 1
 	fi
 
 	# Fetch latest updates from remote
-	git -C "${PROJECT_PATH}" fetch "${DEFAULT_GIT_REMOTE}"
+	git_repo fetch "${DEFAULT_GIT_REMOTE}"
 
 	if echo "${PRIMARY_GIT_BRANCHES}" | grep -q -w "${CURRENT_BRANCH}"; then
 		# Current branch is a primary branch
 
 		# Merge with latest updates from remote
-		git -C "${PROJECT_PATH}" merge --ff-only "${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}"
+		git_repo merge --ff-only "${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}"
 
 		# Create update branch from the current branch
-		git -C "${PROJECT_PATH}" checkout -b "${UPDATE_GIT_BRANCH}" "${CURRENT_BRANCH}"
+		git_repo checkout -b "${UPDATE_GIT_BRANCH}" "${CURRENT_BRANCH}"
 
-		echo '✅  Checked out update branch '${UPDATE_GIT_BRANCH}' (created from current branch).'
+		echo "✅ Checked out update branch '${UPDATE_GIT_BRANCH}' (created from current branch)."
 
 	else
 
 		# Create the update branch from first found remote-tracking branch in order of priority
 		echo "${PRIMARY_GIT_BRANCHES}" | while IFS= read -r branch; do
-			if git -C "${PROJECT_PATH}" show-ref --verify --quiet "refs/remotes/${DEFAULT_GIT_REMOTE}/${branch}"; then
-				git -C "${PROJECT_PATH}" checkout -b "${UPDATE_GIT_BRANCH}" "refs/remotes/${DEFAULT_GIT_REMOTE}/${branch}"
+			if git_repo show-ref --verify --quiet "refs/remotes/${DEFAULT_GIT_REMOTE}/${branch}"; then
+				git_repo checkout -b "${UPDATE_GIT_BRANCH}" "refs/remotes/${DEFAULT_GIT_REMOTE}/${branch}"
 				break
 			fi
 		done
 
 		# Verify that the update branch was created and checked out
-		if [ "$(git -C "${PROJECT_PATH}" branch --show-current)" != "${UPDATE_GIT_BRANCH}" ]; then
-			echo "❌  Failed to check out update branch '${UPDATE_GIT_BRANCH}'."
+		if [ "$(git_repo branch --show-current)" != "${UPDATE_GIT_BRANCH}" ]; then
+			echo "❌ Failed to check out update branch '${UPDATE_GIT_BRANCH}'."
 			exit 1
 		fi
 
-		echo '✅  Checked out update branch '${UPDATE_GIT_BRANCH}' (created from remote-tracking branch).'
+		echo "✅ Checked out update branch '${UPDATE_GIT_BRANCH}' (created from remote-tracking branch)."
 
 	fi
 
@@ -116,34 +156,34 @@ fi
 
 # ---
 
-if [ ! -f "${PROJECT_PATH}/.env" ]; then
+if [ ! -f "${WORKING_DIR}/.env" ]; then
 	PROJECT_SLUG=''
 else
 	# Get the project slug from the .env file
 	PROJECT_SLUG="$(
-		grep -E '^IMAGES_PREFIX=' "${PROJECT_PATH}/.env" \
+		grep -E '^IMAGES_PREFIX=' "${WORKING_DIR}/.env" \
 		| cut -d '=' -f 2- | sed -E "s/^['\"]|['\"]$//g"
 	)"
 fi
 
-if [ ! -f "${PROJECT_PATH}/${APP_DIR}/src/site.ts" ]; then
+if [ ! -f "${WORKING_DIR}/${APP_DIR}/src/site.ts" ]; then
 	SITE_TITLE=''
 	GITHUB_REPO_PATH=''
 else
 	# Get the site title from the site.ts file
 	SITE_TITLE="$(
-		grep -E "^[[:space:]]*title:[[:space:]]*['\"]" "${PROJECT_PATH}/${APP_DIR}/src/site.ts" \
+		grep -E "^[[:space:]]*title:[[:space:]]*['\"]" "${WORKING_DIR}/${APP_DIR}/src/site.ts" \
 		| env LC_ALL=C sed -E "s/^[[:space:]]*title:[[:space:]]*['\"]([^'\"]*)['\"],?.*$/\1/"
 	)"
 
 	# Get the github repository path from the site.ts file
 	GITHUB_REPO_PATH="$(
-		grep -E "^[[:space:]]*\|\|[[:space:]]+['\"]https?://github\\.com/" "${PROJECT_PATH}/${APP_DIR}/src/site.ts" \
+		grep -E "^[[:space:]]*\|\|[[:space:]]+['\"]https?://github\\.com/" "${WORKING_DIR}/${APP_DIR}/src/site.ts" \
 		| env LC_ALL=C sed -E "s/^[[:space:]]*\|\|[[:space:]]+['\"]https?:\/\/github\\.com\/([^'\"/]+\/[^'\"/]+).*/\1/"
 	)"
 fi
 
-echo '✅  Fetched project information.'
+echo '✅ Fetched project information.'
 
 # ---
 
@@ -158,12 +198,12 @@ if ! git clone \
 	; then
 
 	err_text="$(sanitize_err "${ERR_FILE}")"
-	echo '❌  Failed to clone Astro template repository'
+	echo '❌ Failed to clone Astro template repository'
 	[ -n "${err_text}" ] && echo "${err_text}" >&2
 	exit 1
 fi
 
-echo '✅  Cloned Astro template repository.'
+echo '✅ Cloned Astro template repository.'
 
 # ---
 
@@ -185,12 +225,12 @@ if [ -s "${SED_FILE}" ]; then
 		fi
 
 		update_file="$(mktemp)" || {
-			echo "❌  Failed to create temporary file for updating '${file}'."
+			echo "❌ Failed to create temporary file for updating '${file}'."
 			exit 1
 		}
 
 		env LC_ALL=C sed -f "${SED_FILE}" -- "${file}" > "${update_file}" || {
-			echo "❌  Failed to update file '${file}'."
+			echo "❌ Failed to update file '${file}'."
 			rm -f -- "${update_file}"
 			exit 1
 		}
@@ -204,80 +244,80 @@ if [ -s "${SED_FILE}" ]; then
 	done
 fi
 
-echo '✅  Updated template files with project information.'
+echo '✅ Updated template files with project information.'
 
 # ---
 
-cp "${TEMPLATE_PATH}/.editorconfig" "${PROJECT_PATH}/"
-cp "${TEMPLATE_PATH}/.env"* "${PROJECT_PATH}/"
-cp "${TEMPLATE_PATH}/.gitignore" "${PROJECT_PATH}/"
-cp "${TEMPLATE_PATH}/docker-compose"* "${PROJECT_PATH}/"
-cp "${TEMPLATE_PATH}/Makefile" "${PROJECT_PATH}/"
-cp "${TEMPLATE_PATH}/README.md" "${PROJECT_PATH}/"
+cp "${TEMPLATE_PATH}/.editorconfig" "${WORKING_DIR}/"
+cp "${TEMPLATE_PATH}/.env"* "${WORKING_DIR}/"
+cp "${TEMPLATE_PATH}/.gitignore" "${WORKING_DIR}/"
+cp "${TEMPLATE_PATH}/docker-compose"* "${WORKING_DIR}/"
+cp "${TEMPLATE_PATH}/Makefile" "${WORKING_DIR}/"
+cp "${TEMPLATE_PATH}/README.md" "${WORKING_DIR}/"
 
-mkdir -p "${PROJECT_PATH}/.devcontainer/"
-cp "${TEMPLATE_PATH}/.devcontainer/"*.* "${PROJECT_PATH}/.devcontainer/"
+mkdir -p "${WORKING_DIR}/.devcontainer/"
+cp "${TEMPLATE_PATH}/.devcontainer/"*.* "${WORKING_DIR}/.devcontainer/"
 
-mkdir -p "${PROJECT_PATH}/.github/workflows/"
-cp "${TEMPLATE_PATH}/.github/workflows/"*.* "${PROJECT_PATH}/.github/workflows/"
+mkdir -p "${WORKING_DIR}/.github/workflows/"
+cp "${TEMPLATE_PATH}/.github/workflows/"*.* "${WORKING_DIR}/.github/workflows/"
 
-mkdir -p "${PROJECT_PATH}/.github/workflows/scripts/"
-cp "${TEMPLATE_PATH}/.github/workflows/scripts/"*.* "${PROJECT_PATH}/.github/workflows/scripts/"
+mkdir -p "${WORKING_DIR}/.github/workflows/scripts/"
+cp "${TEMPLATE_PATH}/.github/workflows/scripts/"*.* "${WORKING_DIR}/.github/workflows/scripts/"
 
-mkdir -p "${PROJECT_PATH}/.vscode/"
-cp "${TEMPLATE_PATH}/.vscode/extensions.json" "${PROJECT_PATH}/.vscode/"
+mkdir -p "${WORKING_DIR}/.vscode/"
+cp "${TEMPLATE_PATH}/.vscode/extensions.json" "${WORKING_DIR}/.vscode/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/"
-cp "${TEMPLATE_PATH}/app/.dockerignore" "${PROJECT_PATH}/${APP_DIR}/"
-cp "${TEMPLATE_PATH}/app/Dockerfile" "${PROJECT_PATH}/${APP_DIR}/"
-cp "${TEMPLATE_PATH}/app/"*.* "${PROJECT_PATH}/${APP_DIR}/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/"
+cp "${TEMPLATE_PATH}/app/.dockerignore" "${WORKING_DIR}/${APP_DIR}/"
+cp "${TEMPLATE_PATH}/app/Dockerfile" "${WORKING_DIR}/${APP_DIR}/"
+cp "${TEMPLATE_PATH}/app/"*.* "${WORKING_DIR}/${APP_DIR}/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/docker/"
-cp "${TEMPLATE_PATH}/app/docker/"*.* "${PROJECT_PATH}/${APP_DIR}/docker/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/docker/"
+cp "${TEMPLATE_PATH}/app/docker/"*.* "${WORKING_DIR}/${APP_DIR}/docker/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/nginx/"
-cp "${TEMPLATE_PATH}/app/nginx/"*.* "${PROJECT_PATH}/${APP_DIR}/nginx/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/nginx/"
+cp "${TEMPLATE_PATH}/app/nginx/"*.* "${WORKING_DIR}/${APP_DIR}/nginx/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/src/"
-cp "${TEMPLATE_PATH}/app/src/"*.* "${PROJECT_PATH}/${APP_DIR}/src/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/src/"
+cp "${TEMPLATE_PATH}/app/src/"*.* "${WORKING_DIR}/${APP_DIR}/src/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/src/i18n/"
-cp "${TEMPLATE_PATH}/app/src/i18n/"*.* "${PROJECT_PATH}/${APP_DIR}/src/i18n/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/src/i18n/"
+cp "${TEMPLATE_PATH}/app/src/i18n/"*.* "${WORKING_DIR}/${APP_DIR}/src/i18n/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/src/i18n/locales/"
-cp "${TEMPLATE_PATH}/app/src/i18n/locales/"*.* "${PROJECT_PATH}/${APP_DIR}/src/i18n/locales/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/src/i18n/locales/"
+cp "${TEMPLATE_PATH}/app/src/i18n/locales/"*.* "${WORKING_DIR}/${APP_DIR}/src/i18n/locales/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/src/layouts/"
-cp "${TEMPLATE_PATH}/app/src/layouts/"*.* "${PROJECT_PATH}/${APP_DIR}/src/layouts/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/src/layouts/"
+cp "${TEMPLATE_PATH}/app/src/layouts/"*.* "${WORKING_DIR}/${APP_DIR}/src/layouts/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/src/styles/"
-cp "${TEMPLATE_PATH}/app/src/styles/"*.* "${PROJECT_PATH}/${APP_DIR}/src/styles/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/src/styles/"
+cp "${TEMPLATE_PATH}/app/src/styles/"*.* "${WORKING_DIR}/${APP_DIR}/src/styles/"
 
-mkdir -p "${PROJECT_PATH}/${APP_DIR}/test/"
-cp -r "${TEMPLATE_PATH}/app/test/"* "${PROJECT_PATH}/${APP_DIR}/test/"
+mkdir -p "${WORKING_DIR}/${APP_DIR}/test/"
+cp -r "${TEMPLATE_PATH}/app/test/"* "${WORKING_DIR}/${APP_DIR}/test/"
 
-mkdir -p "${PROJECT_PATH}/scripts/"
-cp "${TEMPLATE_PATH}/scripts/"*.* "${PROJECT_PATH}/scripts/"
+mkdir -p "${WORKING_DIR}/scripts/"
+cp "${TEMPLATE_PATH}/scripts/"*.* "${WORKING_DIR}/scripts/"
 
-echo '✅  Copied template files to project.'
+echo '✅ Copied template files to project.'
 
 # ---
 
 # Set template commit hash in project
 COMMIT_HASH=$(git -C "${TEMPLATE_PATH}" rev-parse HEAD)
-echo "${COMMIT_HASH}" > "${PROJECT_PATH}/${APP_DIR}/.astro-template"
+echo "${COMMIT_HASH}" > "${WORKING_DIR}/${APP_DIR}/.astro-template"
 
 # Git add template commit hash file
-git -C "${PROJECT_PATH}" add "${APP_DIR}/.astro-template"
+git_repo add "${APP_DIR}/.astro-template"
 
 # Commit if there are staged changes
-if [ -n "$(git -C "${PROJECT_PATH}" diff --cached --name-only)" ]; then
-	git -C "${PROJECT_PATH}" commit -m 'Set astro template commit hash'
+if [ -n "$(git_repo diff --cached --name-only)" ]; then
+	git_repo commit -m 'Set astro template commit hash'
 fi
 
-echo "✅  Set template commit hash in project: '${COMMIT_HASH}'"
+echo "✅ Set template commit hash in project: '${COMMIT_HASH}'"
 
 # ---
 
-echo '👏  Done!'
-echo '📝  Please review the changes and restore your custom files as necessary.'
+echo '👏 Done!'
+echo '📝 Please review the changes and restore your custom files as necessary.'
