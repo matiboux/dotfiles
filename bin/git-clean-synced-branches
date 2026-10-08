@@ -85,10 +85,10 @@ kept_count=0
 delete_branch() {
 	if git_repo branch "$1" "$2" >/dev/null 2>&1; then
 		deleted_count=$((deleted_count + 1))
-		echo " * Deleted local branch '$2'."
+		echo "* Deleted local branch '$2'."
 	else
 		kept_count=$((kept_count + 1))
-		echo " * ⚠️  Kept local branch '$2': not fully merged, delete it manually with git branch -D"
+		echo "* ⚠️  Kept local branch '$2': not fully merged, delete it manually with git branch -D"
 	fi
 }
 
@@ -205,7 +205,7 @@ fi
 while read -r remote; do
 	[ -z "${remote}" ] && continue
 	git_repo remote prune "${remote}" >/dev/null
-	echo " * Pruned remote-tracking branches for remote '${remote}'."
+	echo "* Pruned remote-tracking branches for remote '${remote}'."
 done <<EOF
 $(git_repo remote)
 EOF
