@@ -20,16 +20,25 @@
 # - SECRETS_SCAN_GITLEAKS_IMAGE_TAG: tag of the zricethezav/gitleaks image (default: latest).
 set -u
 
+DEFAULT_BASELINE_PATH='.gitleaks-baseline.json'
+DEFAULT_IMAGE_TAG='latest'
+DEFAULT_ALLOWLIST_REGEXES='(SECRET|TEST|YOUR)_(CLIENT|API)_(SECRET|KEY|TOKEN)'
+
 mode='scan'
 scan_target='git'
+gitleaks_config_file=''
 
 usage() {
 	echo "Usage: ${0##*/} [-h|--help] [-s|--stateless] [-u|--update-baseline]"
 }
 
+cleanup() {
+	[ -n "${gitleaks_config_file}" ] && rm -f "${gitleaks_config_file}"
+}
+trap cleanup EXIT
+
 while [ "$#" -gt 0 ]; do
-	arg="$1"
-	case "${arg}" in
+	case "$1" in
 		-h|--help)
 			usage
 			exit 0
@@ -61,25 +70,17 @@ fi
 WORKING_DIR="${WORKING_DIR:-$(pwd)}"
 repo_dir="$(CDPATH= cd -- "${WORKING_DIR}" && pwd)"
 
-baseline_path="${SECRETS_SCAN_BASELINE_PATH:-}"
-[ -z "${baseline_path}" ] && baseline_path='.gitleaks-baseline.json'
+baseline_path="${SECRETS_SCAN_BASELINE_PATH:-${DEFAULT_BASELINE_PATH}}"
 has_baseline='false'
 [ -f "${repo_dir}/${baseline_path}" ] && has_baseline='true'
 
-gitleaks_image_tag="${SECRETS_SCAN_GITLEAKS_IMAGE_TAG:-}"
-[ -z "${gitleaks_image_tag}" ] && gitleaks_image_tag='latest'
+gitleaks_image_tag="${SECRETS_SCAN_GITLEAKS_IMAGE_TAG:-${DEFAULT_IMAGE_TAG}}"
+allowlist_regexes="${SECRETS_SCAN_ALLOWLIST_REGEXES:-${DEFAULT_ALLOWLIST_REGEXES}}"
 
-# Escape a string for use inside a TOML/regex literal.
-escape_regex() {
-	printf '%s' "$1" | sed -e 's/[.[\*^$()+?{}|\\]/\\&/g'
-}
+# The baseline stores raw matches, so scanning it would report every baselined
+# finding again. Its path is escaped for use inside a TOML/regex literal.
+baseline_path_regex="$(printf '%s' "${baseline_path}" | sed -e 's/[.[\*^$()+?{}|\\]/\\&/g')"
 
-# The baseline stores raw matches, so scanning it would report every baselined finding again.
-baseline_path_regex="$(escape_regex "${baseline_path}")"
-
-# A baseline entry can't cover placeholders in `dir` scans: its fingerprint is
-# commit-based, while `dir` fingerprints are path-based.
-allowlist_regexes="${SECRETS_SCAN_ALLOWLIST_REGEXES:-(SECRET|TEST|YOUR)_(CLIENT|API)_(SECRET|KEY|TOKEN)}"
 allowlist_regexes_toml=''
 old_ifs="${IFS}"
 IFS=','
@@ -100,79 +101,85 @@ EOF
 )"
 gitleaks_config_b64="$(printf '%s' "${gitleaks_config_content}" | base64 | tr -d '\n')"
 
-gitleaks_config_file=''
-cleanup() {
-	[ -n "${gitleaks_config_file}" ] && rm -f "${gitleaks_config_file}"
-}
-trap cleanup EXIT
-
-# Gitleaks arguments
-if [ "${mode}" = 'update-baseline' ]; then
-	host_args="--report-format json --report-path ${repo_dir}/${baseline_path}"
-	container_args="--report-format json --report-path /repo/${baseline_path}"
-elif [ "${has_baseline}" = 'true' ]; then
-	host_args="--baseline-path ${repo_dir}/${baseline_path} --verbose"
-	container_args="--baseline-path /repo/${baseline_path} --verbose"
-else
-	host_args='--verbose'
-	container_args='--verbose'
-fi
-
-if command -v gitleaks >/dev/null 2>&1; then
+write_gitleaks_config_file() {
 	gitleaks_config_file="$(mktemp)"
 	printf '%s\n' "${gitleaks_config_content}" > "${gitleaks_config_file}"
-	host_args="${host_args} --config ${gitleaks_config_file}"
-	run_gitleaks() {
-		gitleaks "${scan_target}" "${repo_dir}" --no-banner ${host_args}
-	}
+}
+
+# Prints the gitleaks arguments specific to the mode, for a given repo root
+# (host path or container path).
+mode_args() {
+	if [ "${mode}" = 'update-baseline' ]; then
+		echo "--report-format json --report-path $1/${baseline_path}"
+	elif [ "${has_baseline}" = 'true' ]; then
+		echo "--baseline-path $1/${baseline_path} --verbose"
+	else
+		echo '--verbose'
+	fi
+}
+
+# Shell script run in the container when the repo is streamed as a tar archive.
+# The gitleaks config is embedded as base64 since it cannot be bind-mounted.
+stream_container_script() {
+	echo "mkdir -p /repo && tar -xf - -C /repo && printf '%s' '${gitleaks_config_b64}' | base64 -d > /tmp/gitleaks.toml && gitleaks ${scan_target} /repo --no-banner --config /tmp/gitleaks.toml $(mode_args /repo)"
+}
+
+run_with_binary() {
+	write_gitleaks_config_file
+	gitleaks "${scan_target}" "${repo_dir}" --no-banner --config "${gitleaks_config_file}" $(mode_args "${repo_dir}")
+}
+
+run_with_docker_mount() {
+	write_gitleaks_config_file
+	docker run --rm \
+		-e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
+		-v "${repo_dir}:/repo" \
+		-v "${gitleaks_config_file}:/gitleaks.toml:ro" \
+		"${docker_image}" \
+		"${scan_target}" /repo --no-banner --config /gitleaks.toml $(mode_args /repo)
+}
+
+# Bind mount is not available: stream an archive of the repo directory to the
+# container and scan it there.
+run_with_docker_stream() {
+	tar -cf - -C "${repo_dir}" . \
+	| docker run --rm -i --entrypoint sh "${docker_image}" -c "$(stream_container_script)"
+}
+
+# Same as above, but the baseline is generated in the container, so it has to
+# be copied back to the host afterwards.
+run_with_docker_stream_baseline() {
+	local container_id="$(docker create -i --entrypoint sh "${docker_image}" -c "$(stream_container_script)")"
+	[ -z "${container_id}" ] && return 2
+
+	tar -cf - -C "${repo_dir}" . | docker start -ai "${container_id}"
+	local rc=$?
+
+	if [ "${rc}" -lt 2 ]; then
+		local baseline_tmp="$(mktemp)"
+		if docker cp "${container_id}:/repo/${baseline_path}" "${baseline_tmp}" >/dev/null 2>&1; then
+			mv "${baseline_tmp}" "${repo_dir}/${baseline_path}"
+		else
+			rm -f "${baseline_tmp}"
+			rc=2
+		fi
+	fi
+
+	docker rm -f "${container_id}" >/dev/null 2>&1
+	return "${rc}"
+}
+
+# Pick the first available strategy.
+if command -v gitleaks >/dev/null 2>&1; then
+	run_gitleaks='run_with_binary'
 elif command -v docker >/dev/null 2>&1; then
 	docker_image="zricethezav/gitleaks:${gitleaks_image_tag}"
 	if docker run --rm -v "${repo_dir}:/probe" --entrypoint sh "${docker_image}" -c 'test -d /probe/.git' >/dev/null 2>&1; then
-		gitleaks_config_file="$(mktemp)"
-		printf '%s\n' "${gitleaks_config_content}" > "${gitleaks_config_file}"
-		container_args="${container_args} --config /gitleaks.toml"
-		run_gitleaks() {
-			docker run --rm \
-				-e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
-				-v "${repo_dir}:/repo" \
-				-v "${gitleaks_config_file}:/gitleaks.toml:ro" \
-				"${docker_image}" \
-				"${scan_target}" /repo --no-banner ${container_args}
-		}
+		run_gitleaks='run_with_docker_mount'
+	elif [ "${mode}" = 'update-baseline' ]; then
+		run_gitleaks='run_with_docker_stream_baseline'
 	else
-		# Bind mount is not available, so we stream an archive of the repo
-		# directory to the container and use it for the scan. The gitleaks
-		# config is embedded as base64 since it cannot be bind-mounted here.
-		if [ "${mode}" = 'update-baseline' ]; then
-			run_gitleaks() {
-				local container_id="$(
-					docker create -i --entrypoint sh "${docker_image}" \
-						-c "mkdir -p /repo && tar -xf - -C /repo && printf '%s' '${gitleaks_config_b64}' | base64 -d > /tmp/gitleaks.toml && gitleaks ${scan_target} /repo --no-banner --config /tmp/gitleaks.toml ${container_args}"
-				)"
-				[ -z "${container_id}" ] && return 2
-				tar -cf - -C "${repo_dir}" . | docker start -ai "${container_id}"
-				local gitleaks_rc=$?
-				[ "${gitleaks_rc}" -ge 2 ] && return "${gitleaks_rc}"
-				local gitleaks_baseline="$(mktemp)"
-				docker cp "${container_id}:/repo/${baseline_path}" "${gitleaks_baseline}" > /dev/null 2>&1
-				if [ $? -eq 0 ]; then
-					mv "${gitleaks_baseline}" "${repo_dir}/${baseline_path}" > /dev/null 2>&1
-				else
-					rm -f "${gitleaks_baseline}" > /dev/null 2>&1
-					gitleaks_rc=2
-				fi
-				docker rm -f "${container_id}" > /dev/null 2>&1
-				return "${gitleaks_rc}"
-			}
-		else
-			run_gitleaks() {
-				tar -cf - -C "${repo_dir}" . \
-				| docker run --rm -i \
-					--entrypoint sh \
-					"${docker_image}" \
-					-c "mkdir -p /repo && tar -xf - -C /repo && printf '%s' '${gitleaks_config_b64}' | base64 -d > /tmp/gitleaks.toml && gitleaks ${scan_target} /repo --no-banner --config /tmp/gitleaks.toml ${container_args}"
-			}
-		fi
+		run_gitleaks='run_with_docker_stream'
 	fi
 else
 	echo '⚠️  Skipped scan: Neither Gitleaks nor Docker found on PATH' >&2
@@ -188,14 +195,12 @@ fi
 echo ''
 if [ "${mode}" = 'update-baseline' ]; then
 	echo "📋 Regenerating gitleaks baseline at ${baseline_path}..."
+elif [ "${has_baseline}" = 'true' ]; then
+	echo "📋 Running gitleaks (baseline: ${baseline_path})..."
 else
-	if [ "${has_baseline}" = 'true' ]; then
-		echo "📋 Running gitleaks (baseline: ${baseline_path})..."
-	else
-		echo '📋 Running gitleaks (no baseline found)...'
-	fi
+	echo '📋 Running gitleaks (no baseline found)...'
 fi
-run_gitleaks
+"${run_gitleaks}"
 gitleaks_rc=$?
 
 echo ''
@@ -207,6 +212,7 @@ if [ "${mode}" = 'update-baseline' ]; then
 	echo "✅ Baseline written to ${baseline_path}"
 	exit 0
 fi
+
 if [ "${gitleaks_rc}" -ne 0 ]; then
 	echo '❌ New secrets found'
 else
