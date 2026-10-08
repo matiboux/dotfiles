@@ -13,11 +13,17 @@
 #   real secrets included.
 #
 # Environment:
-# - SECRETS_SCAN_BASELINE_PATH: optional gitleaks baseline (relative to the repo root) of
-#   reviewed false positives, so only new findings fail. Always excluded from the scan.
-# - SECRETS_SCAN_ALLOWLIST_REGEXES: comma-separated regexes to always ignore, added to the
-#   default that matches placeholder names like SECRET_API_KEY.
-# - SECRETS_SCAN_GITLEAKS_IMAGE_TAG: tag of the zricethezav/gitleaks image (default: latest).
+# - SECRETS_SCAN_ALLOWLIST_REGEXES: comma-separated regexes of matches to always ignore.
+#   Replaces the default, which matches placeholder names like SECRET_API_KEY.
+#   (default: "(SECRET|TEST|YOUR)_(CLIENT|API)_(SECRET|KEY|TOKEN)")
+# - SECRETS_SCAN_BASELINE_PATH: gitleaks baseline file, relative to the repo root.
+#   It lists reviewed false positives, so that only new findings fail the scan.
+#   The baseline file itself is never scanned.
+#   (default: ".gitleaks-baseline.json")
+# - SECRETS_SCAN_GITLEAKS_IMAGE_TAG: tag of the zricethezav/gitleaks docker image.
+#   (default: "latest")
+# - WORKING_DIR: directory to scan.
+#   (default: shell current directory)
 set -u
 
 DEFAULT_BASELINE_PATH='.gitleaks-baseline.json'
