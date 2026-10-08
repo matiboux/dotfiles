@@ -126,8 +126,8 @@ done <<EOF
 ${branches}
 EOF
 
-echo ''
 if [ "${unsynced_count}" -gt 0 ]; then
+	echo ''
 	echo "⚠️  ${unsynced_count}/${total_count} local branches not in sync"
 	if [ "${gone_count}" -gt 0 ]; then
 		gone_label='branches'
