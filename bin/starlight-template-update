@@ -29,13 +29,8 @@ DEFAULT_GIT_REMOTE='origin'
 UPDATE_GIT_BRANCH='feat/update-starlight-template'
 APP_DIR='app'
 
-PRIMARY_GIT_BRANCHES="$(cat <<EOF
-dev
-staging
-main
-master
-EOF
-)"
+# Primary branches, in order of preference to create the update branch from
+PRIMARY_GIT_BRANCHES='dev staging main master'
 
 usage() {
 	echo "Usage: ${0##*/} [-h|--help] [<project_path> [<app_dir>]]"
@@ -121,7 +116,7 @@ else
 	# Fetch latest updates from remote
 	git_repo fetch "${DEFAULT_GIT_REMOTE}"
 
-	if echo "${PRIMARY_GIT_BRANCHES}" | grep -q -w "${CURRENT_BRANCH}"; then
+	if case " ${PRIMARY_GIT_BRANCHES} " in *" ${CURRENT_BRANCH} "*) true ;; *) false ;; esac; then
 		# Current branch is a primary branch
 
 		# Merge with latest updates from remote
@@ -135,7 +130,7 @@ else
 	else
 
 		# Create the update branch from first found remote-tracking branch in order of priority
-		echo "${PRIMARY_GIT_BRANCHES}" | while IFS= read -r branch; do
+		for branch in ${PRIMARY_GIT_BRANCHES}; do
 			if git_repo show-ref --verify --quiet "refs/remotes/${DEFAULT_GIT_REMOTE}/${branch}"; then
 				git_repo checkout -b "${UPDATE_GIT_BRANCH}" "refs/remotes/${DEFAULT_GIT_REMOTE}/${branch}"
 				break
