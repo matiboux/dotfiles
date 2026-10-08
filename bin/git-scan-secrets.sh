@@ -41,6 +41,8 @@ while [ "$#" -gt 0 ]; do
 			mode='update-baseline'
 			;;
 		--)
+			shift
+			break
 			;;
 		*)
 			usage >&2
@@ -49,6 +51,12 @@ while [ "$#" -gt 0 ]; do
 	esac
 	shift
 done
+
+# No positional arguments are accepted, including after `--`.
+if [ "$#" -gt 0 ]; then
+	usage >&2
+	exit 1
+fi
 
 WORKING_DIR="${WORKING_DIR:-$(pwd)}"
 repo_dir="$(CDPATH= cd -- "${WORKING_DIR}" && pwd)"
