@@ -1,41 +1,41 @@
 #!/bin/sh
 set -eu
 
-DOTFILES_DIR="${HOME}/.dotfiles"
+DOTFILES_DIR="${DOTFILES_DIR:-${HOME}/.dotfiles}"
 
 [ -d "${DOTFILES_DIR}" ] || {
-    echo "⚠️ Dotfiles directory not found."
+    echo "⚠️ Dotfiles directory not found." >&2
     exit 1
 }
 
-CDPATH= cd "$DOTFILES_DIR" || {
-	echo "❌ Failed to change directory to dotfiles."
-	exit 1
+CDPATH= cd "${DOTFILES_DIR}" || {
+    echo "❌ Failed to change directory to dotfiles." >&2
+    exit 1
 }
 
 # Verify that the repository is on the main branch
 current_branch="$(git symbolic-ref --short -q HEAD || true)"
 [ "${current_branch}" = 'main' ] || {
-    echo "⚠️ Dotfiles repository is not on the main branch."
+    echo "⚠️ Dotfiles repository is not on the main branch." >&2
     exit 1
 }
 
 # Pull latest changes from the main branch
 git pull -q --ff-only || {
-    echo "❌ Failed to pull latest changes."
+    echo "❌ Failed to pull latest changes." >&2
     exit 1
 }
 
 # Update submodules if any
 git submodule update -q --init --recursive || {
-    echo "❌ Failed to update submodules."
+    echo "❌ Failed to update submodules." >&2
     exit 1
 }
 
 # Install updated dotfiles
 if [ -f "install.sh" ]; then
     sh install.sh || {
-        echo "❌ Failed to install updated dotfiles."
+        echo "❌ Failed to install updated dotfiles." >&2
         exit 1
     }
 fi
