@@ -1,0 +1,31 @@
+#!/bin/sh
+set -u
+
+DOTFILES_DIR="${HOME}/.dotfiles"
+
+if [ ! -d "${DOTFILES_DIR}" ]; then
+    echo "⚠️ Dotfiles directory not found."
+    exit 1
+fi
+
+CDPATH= cd "$DOTFILES_DIR"
+
+# Verify that the repository is on the main branch
+current_branch="$(git symbolic-ref --short HEAD)"
+if [ "${current_branch}" != "main" ]; then
+    echo "⚠️ Dotfiles repository is not on the main branch."
+    exit 1
+fi
+
+# Pull latest changes from the main branch
+git pull --ff-only --quiet
+
+# Update submodules if any
+git submodule update --init --recursive --quiet
+
+# Install updated dotfiles
+if [ -f "install.sh" ]; then
+    sh install.sh
+fi
+
+echo "✅ Dotfiles update completed successfully."
