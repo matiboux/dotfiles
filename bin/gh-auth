@@ -4,13 +4,13 @@ set -eu
 gh_command="$(command -v gh || true)"
 
 [ -x "${gh_command}" ] || {
-    echo "⚠️ GitHub CLI (gh) is not installed." >&2
-    exit 1
+	echo "⚠️ GitHub CLI (gh) is not installed." >&2
+	exit 1
 }
 
-if "${gh_command}" auth status >/dev/null 2>&1; then
-    echo "✅ GitHub CLI is already authenticated."
-    exit 0
+if "${gh_command}" auth status --active --hostname github.com >/dev/null 2>&1; then
+	echo "✅ GitHub CLI is already authenticated."
+	exit 0
 fi
 
 # Prompt the user to authenticate
