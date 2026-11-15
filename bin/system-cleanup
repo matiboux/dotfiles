@@ -257,13 +257,13 @@ hint() {
 print_menu() {
 	# Clear the screen and move the cursor to the top-left corner
 	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
-	printf 'Cleanup tasks (⚠️  = sensitive)\r\n\r\n'
+	printf 'Cleanup tasks (! = sensitive)\r\n\r\n'
 	i=1
 	while [ "${i}" -le "${task_count}" ]; do
 		mark=' '
 		[ "$(get "task_sel_${i}")" = 1 ] && mark='x'
 		flag='  '
-		[ "$(get "task_level_${i}")" = 'sensitive' ] && flag='⚠️ '
+		[ "$(get "task_level_${i}")" = 'sensitive' ] && flag='! '
 		if [ "${i}" -eq "${cursor}" ]; then
 			printf '\033[7m > [%s] %s%s \033[0m\r\n' "${mark}" "${flag}" "$(get "task_desc_${i}")"
 		else
@@ -274,7 +274,6 @@ print_menu() {
 	printf '\r\n'
 	hint '↑↓' 'move'
 	hint 'SPACE' 'toggle'
-	hint '1-9' 'toggle directly'
 	printf '\r\n'
 	hint 'A' 'all'
 	hint 'S' 'safe only'
@@ -310,10 +309,6 @@ menu_loop() {
 			6e) select_tasks none ;; # n
 			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
 			6a) [ "${cursor}" -ge "${task_count}" ] || cursor=$((cursor + 1)) ;; # j
-			3[1-9])
-				digit=$(( 0x${key} - 0x30 ))
-				[ "${digit}" -gt "${task_count}" ] || toggle_task "${digit}"
-				;;
 			1b)
 				# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
 				stty min 0 time 1 2>/dev/null || true
