@@ -4,20 +4,23 @@
 #
 # Usage: system-cleanup [-y|--yes] [-s|--safe] [-n|--dry-run] [-h|--help]
 #
+# A menu lists the available tasks, to tick or untick before running them.
 # Tasks are split in two levels:
 # - safe: caches that are rebuilt on demand (package managers, ~/.cache, docker
-#   build cache and unused images...). Always run without asking.
+#   build cache and unused images...). Ticked by default.
 # - sensitive: removes data that may matter (logs, old temporary files, trash,
-#   unused packages, unused docker volumes...). Asked for, one by one.
+#   unused packages, unused docker volumes...). Unticked by default.
 #
-# At start, you are asked once how to handle sensitive tasks, and for your sudo
-# password once, so the rest can run unattended.
+# Once you confirm the menu, sudo is requested a single time (only if a selected
+# task needs it), and the selected tasks run unattended.
 #
 # Options:
-# - -y, --yes: autonomous mode, run safe and sensitive tasks without asking.
-# - -s, --safe: safe mode, run safe tasks only and skip sensitive ones.
+# - -y, --yes: no menu, run all tasks, safe and sensitive.
+# - -s, --safe: no menu, run safe tasks only.
 # - -n, --dry-run: only list the tasks that would run.
 # - -h, --help: show usage.
+#
+# Without a terminal, the menu is skipped and only safe tasks run.
 set -eu
 
 mode=''
@@ -29,7 +32,7 @@ usage() {
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-		-y|--yes) mode='auto' ;;
+		-y|--yes) mode='all' ;;
 		-s|--safe) mode='safe' ;;
 		-n|--dry-run) dry_run=1 ;;
 		-h|--help)
@@ -50,45 +53,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 interactive=0
 [ -t 0 ] && interactive=1
 
-# Without a terminal, nothing can be asked: only run the safe tasks
-if [ -z "${mode}" ]; then
-	if [ "${interactive}" -eq 1 ]; then
-		echo 'How should sensitive cleanups (logs, old temp files, trash, unused packages/volumes) be handled?'
-		echo '  [a] Autonomous: run everything without asking again'
-		echo '  [s] Safe only: caches only, skip sensitive tasks'
-		echo '  [i] Interactive: ask for each sensitive task (default)'
-		printf 'Choice [a/s/I]: '
-		read -r choice || choice=''
-		case "${choice}" in
-			a|A) mode='auto' ;;
-			s|S) mode='safe' ;;
-			*) mode='ask' ;;
-		esac
-	else
-		mode='safe'
-	fi
-fi
-
-# Ask for sudo once, and keep it alive for the whole run
 sudo_ok=0
-if [ "$(id -u)" -eq 0 ]; then
-	sudo_ok=1
-elif [ "${dry_run}" -eq 0 ] && have sudo && [ "${interactive}" -eq 1 ]; then
-	echo 'Some tasks need root privileges.'
-	if sudo -v; then
-		sudo_ok=1
-		(
-			while sleep 50; do
-				sudo -n true 2>/dev/null || exit
-				kill -0 "$$" 2>/dev/null || exit
-			done
-		) &
-		keepalive_pid=$!
-		trap 'kill "${keepalive_pid}" 2>/dev/null || true' EXIT INT TERM
-	else
-		echo '⚠️ No sudo access: tasks requiring root will be skipped.' >&2
-	fi
-fi
+[ "$(id -u)" -eq 0 ] && sudo_ok=1
 
 # Run a command as root
 as_root() {
@@ -126,55 +92,57 @@ delete_older_than() {
 		-mtime "+$1" -delete 2>/dev/null || true
 }
 
-confirm() {
-	[ "${interactive}" -eq 1 ] || return 1
-	printf '   ❓ %s [y/N] ' "$1"
-	read -r reply || reply=''
-	case "${reply}" in
-		y|Y|yes|YES) return 0 ;;
-		*) return 1 ;;
-	esac
-}
-
 avail_kb() {
 	df -Pk / | awk 'NR==2 { print $4 }'
 }
 
-count_done=0
-count_skipped=0
+# --- Task registry (POSIX sh has no arrays: task_<field>_<index> variables) ---
 
+task_count=0
+
+# Quote an argument so that it can be safely eval'd
+quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Read the variable named by $1
+get() {
+	eval "printf '%s' \"\${$1}\""
+}
+
+# Register a task. Safe tasks are selected by default.
 # Usage: task <safe|sensitive> <description> <command> [args...]
 task() {
 	level="$1"
 	description="$2"
 	shift 2
 
-	if [ "${level}" = 'sensitive' ]; then
-		echo "⚠️  ${description}"
-		if [ "${mode}" = 'safe' ]; then
-			echo '   ⏭️ Sensitive, skipped (safe mode).'
-			count_skipped=$((count_skipped + 1))
-			return 0
-		fi
-		if [ "${mode}" = 'ask' ] && [ "${dry_run}" -eq 0 ] && ! confirm 'Run this sensitive cleanup?'; then
-			echo '   ⏭️ Skipped.'
-			count_skipped=$((count_skipped + 1))
-			return 0
-		fi
-	else
-		echo "🧹 ${description}"
-	fi
+	command_line=''
+	for arg in "$@"; do
+		command_line="${command_line} $(quote "${arg}")"
+	done
 
-	if [ "${dry_run}" -eq 1 ]; then
-		echo '   (dry run)'
-		return 0
-	fi
-
-	if "$@"; then
-		count_done=$((count_done + 1))
+	task_count=$((task_count + 1))
+	eval "task_level_${task_count}=\$level"
+	eval "task_desc_${task_count}=\$description"
+	eval "task_cmd_${task_count}=\$command_line"
+	if [ "${level}" = 'safe' ]; then
+		eval "task_sel_${task_count}=1"
 	else
-		echo '   ❌ Failed, continuing.' >&2
+		eval "task_sel_${task_count}=0"
 	fi
+}
+
+# Select tasks: all, safe (only safe ones), none
+select_tasks() {
+	i=1
+	while [ "${i}" -le "${task_count}" ]; do
+		case "$1:$(get "task_level_${i}")" in
+			all:*|safe:safe) eval "task_sel_${i}=1" ;;
+			*) eval "task_sel_${i}=0" ;;
+		esac
+		i=$((i + 1))
+	done
 }
 
 docker_ready() { have docker && docker info >/dev/null 2>&1; }
@@ -195,14 +163,14 @@ linux_tasks() {
 
 	[ -d "${HOME}/.cache" ] && task safe 'Empty ~/.cache' empty_dir "${HOME}/.cache"
 
-	have journalctl && task sensitive 'Journal logs: keep the last 7 days only' \
+	have journalctl && task sensitive 'Logs: keep the last 7 days of journal' \
 		as_root journalctl --vacuum-time=7d
-	[ -d /var/log ] && task sensitive 'Delete rotated/compressed logs in /var/log' \
+	[ -d /var/log ] && task sensitive 'Logs: delete rotated/compressed files in /var/log' \
 		as_root find /var/log -xdev -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' \) -delete
-	[ -d "${HOME}/.local/share/Trash" ] && task sensitive 'Empty the trash' \
+	[ -d "${HOME}/.local/share/Trash" ] && task sensitive 'Trash: empty it' \
 		empty_dir "${HOME}/.local/share/Trash"
-	[ -d /tmp ] && task sensitive 'Delete files in /tmp older than 7 days' delete_older_than 7 /tmp
-	[ -d /var/tmp ] && task sensitive 'Delete files in /var/tmp older than 30 days' delete_older_than 30 /var/tmp
+	[ -d /tmp ] && task sensitive 'Temp: delete files in /tmp older than 7 days' delete_older_than 7 /tmp
+	[ -d /var/tmp ] && task sensitive 'Temp: delete files in /var/tmp older than 30 days' delete_older_than 30 /var/tmp
 	return 0
 }
 
@@ -225,14 +193,12 @@ macos_tasks() {
 	[ -d "${HOME}/Library/Developer/Xcode/DerivedData" ] && task safe 'Empty Xcode DerivedData' \
 		empty_dir "${HOME}/Library/Developer/Xcode/DerivedData"
 
-	task sensitive 'Empty ~/Library/Logs' empty_dir "${HOME}/Library/Logs"
-	task sensitive 'Empty /Library/Logs' empty_dir --root /Library/Logs
-	[ -d "${HOME}/.Trash" ] && task sensitive 'Empty the trash' empty_dir "${HOME}/.Trash"
-	[ -d /tmp ] && task sensitive 'Delete files in /tmp older than 7 days' delete_older_than 7 /tmp
+	task sensitive 'Logs: empty ~/Library/Logs' empty_dir "${HOME}/Library/Logs"
+	task sensitive 'Logs: empty /Library/Logs' empty_dir --root /Library/Logs
+	[ -d "${HOME}/.Trash" ] && task sensitive 'Trash: empty it' empty_dir "${HOME}/.Trash"
+	[ -d /tmp ] && task sensitive 'Temp: delete files in /tmp older than 7 days' delete_older_than 7 /tmp
 	return 0
 }
-
-before="$(avail_kb)"
 
 case "${os}" in
 	Linux) linux_tasks ;;
@@ -243,12 +209,124 @@ case "${os}" in
 		;;
 esac
 
+# --- Menu ---
+
+print_menu() {
+	echo
+	echo 'Cleanup tasks ([x] = will run, ⚠️ = sensitive):'
+	i=1
+	while [ "${i}" -le "${task_count}" ]; do
+		mark=' '
+		[ "$(get "task_sel_${i}")" = 1 ] && mark='x'
+		flag='  '
+		[ "$(get "task_level_${i}")" = 'sensitive' ] && flag='⚠️ '
+		printf ' [%s] %2d) %s%s\n' "${mark}" "${i}" "${flag}" "$(get "task_desc_${i}")"
+		i=$((i + 1))
+	done
+	echo
+}
+
+run_menu() {
+	while true; do
+		print_menu
+		printf 'Toggle by number (e.g. "3 5"), [a]ll, [s]afe only, [n]one, [Enter] run, [q]uit: '
+		read -r input || input='q'
+		[ -n "${input}" ] || return 0
+		for token in ${input}; do
+			case "${token}" in
+				a) select_tasks all ;;
+				s) select_tasks safe ;;
+				n) select_tasks none ;;
+				q) echo 'Aborted.'; exit 0 ;;
+				*[!0-9]*|'') echo "Ignored: ${token}" ;;
+				*)
+					if [ "${token}" -ge 1 ] && [ "${token}" -le "${task_count}" ]; then
+						if [ "$(get "task_sel_${token}")" = 1 ]; then
+							eval "task_sel_${token}=0"
+						else
+							eval "task_sel_${token}=1"
+						fi
+					else
+						echo "Ignored: ${token}"
+					fi
+					;;
+			esac
+		done
+	done
+}
+
+case "${mode}" in
+	all) select_tasks all ;;
+	safe) select_tasks safe ;;
+	*) [ "${interactive}" -eq 1 ] && run_menu ;;
+esac
+
+# --- Run ---
+
+selected=0
+needs_root=0
+i=1
+while [ "${i}" -le "${task_count}" ]; do
+	if [ "$(get "task_sel_${i}")" = 1 ]; then
+		selected=$((selected + 1))
+		case "$(get "task_cmd_${i}")" in
+			*as_root*|*--root*|*delete_older_than*) needs_root=1 ;;
+		esac
+	fi
+	i=$((i + 1))
+done
+
+if [ "${selected}" -eq 0 ]; then
+	echo 'Nothing selected.'
+	exit 0
+fi
+
+# Ask for sudo once, and keep it alive for the whole run
+if [ "${needs_root}" -eq 1 ] && [ "${sudo_ok}" -eq 0 ] && [ "${dry_run}" -eq 0 ] \
+	&& have sudo && [ "${interactive}" -eq 1 ]; then
+	echo 'Some selected tasks need root privileges.'
+	if sudo -v; then
+		sudo_ok=1
+		(
+			while sleep 50; do
+				sudo -n true 2>/dev/null || exit
+				kill -0 "$$" 2>/dev/null || exit
+			done
+		) &
+		keepalive_pid=$!
+		trap 'kill "${keepalive_pid}" 2>/dev/null || true' EXIT INT TERM
+	else
+		echo '⚠️ No sudo access: tasks requiring root will be skipped.' >&2
+	fi
+fi
+
+before="$(avail_kb)"
+count_done=0
+count_failed=0
+
+echo
+i=1
+while [ "${i}" -le "${task_count}" ]; do
+	if [ "$(get "task_sel_${i}")" = 1 ]; then
+		echo "🧹 $(get "task_desc_${i}")"
+		if [ "${dry_run}" -eq 1 ]; then
+			echo '   (dry run)'
+		elif eval "$(get "task_cmd_${i}")"; then
+			count_done=$((count_done + 1))
+		else
+			echo '   ❌ Failed, continuing.' >&2
+			count_failed=$((count_failed + 1))
+		fi
+	fi
+	i=$((i + 1))
+done
+
 echo
 if [ "${dry_run}" -eq 1 ]; then
-	echo '👏 Dry run done, nothing was changed.'
+	echo "👏 Dry run done: ${selected} task(s) would run, nothing was changed."
 else
 	after="$(avail_kb)"
 	freed_mb=$(( (after - before) / 1024 ))
 	[ "${freed_mb}" -ge 0 ] || freed_mb=0
-	echo "👏 Done! ${count_done} task(s) run, ${count_skipped} skipped, ~${freed_mb} MB freed on /."
+	echo "👏 Done! ${count_done} task(s) run, ${count_failed} failed, $((task_count - selected)) not selected, ~${freed_mb} MB freed on /."
 fi
