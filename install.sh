@@ -18,10 +18,17 @@ backup_if_different() {
 	fi
 }
 
-install_dotfile() {
-	name="$1"
-	backup_if_different "${HOME}/${name}" "${script_dir}/${name}"
-	install -m 600 "${script_dir}/${name}" "${HOME}/${name}"
+# Install every file of home/ into $HOME, except the other OS's shell config
+install_dotfiles() {
+	for dotfile_path in "${script_dir}"/home/.[!.]*; do
+		name="${dotfile_path##*/}"
+		case "${name}" in
+			.zshrc|.zprofile) [ "$(uname -s)" = Darwin ] || continue ;;
+			.bashrc) [ "$(uname -s)" != Darwin ] || continue ;;
+		esac
+		backup_if_different "${HOME}/${name}" "${dotfile_path}"
+		install -m 600 "${dotfile_path}" "${HOME}/${name}"
+	done
 }
 
 install_binaries() {
@@ -34,17 +41,5 @@ install_binaries() {
 	done
 }
 
-install_dotfile .gitconfig
-install_dotfile .gitconfig.work
+install_dotfiles
 install_binaries
-
-# Shell config depends on the OS
-case "$(uname -s)" in
-	Darwin)
-		install_dotfile .zshrc
-		install_dotfile .zprofile
-		;;
-	*)
-		install_dotfile .bashrc
-		;;
-esac
