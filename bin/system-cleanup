@@ -68,11 +68,20 @@ as_root() {
 	fi
 }
 
+# Fail with a message when root privileges are not available
+require_root() {
+	[ "$(id -u)" -eq 0 ] || [ "${sudo_ok}" -eq 1 ] || {
+		echo '   ⏭️ Needs root, skipped.' >&2
+		return 1
+	}
+}
+
 # Delete the content of a directory, keeping the directory itself
 # Usage: empty_dir [--root] <dir>
 empty_dir() {
 	runner=''
 	if [ "$1" = '--root' ]; then
+		require_root || return 1
 		runner='as_root'
 		shift
 	fi
@@ -88,6 +97,7 @@ empty_dir() {
 # Delete old files of a directory, without crossing filesystems and keeping sockets
 # Usage: delete_older_than <days> <dir>
 delete_older_than() {
+	require_root || return 1
 	as_root find "$2" -xdev -mindepth 1 ! -type s ! -path '*/.X11-unix*' ! -path '*/.ICE-unix*' \
 		-mtime "+$1" -delete 2>/dev/null || true
 }
