@@ -174,14 +174,14 @@ linux_tasks() {
 
 	[ -d "${HOME}/.cache" ] && task safe 'Empty ~/.cache' empty_dir "${HOME}/.cache"
 
-	have journalctl && task sensitive 'Logs: keep the last 7 days of journal' \
+	have journalctl && task sensitive 'Logs: delete journal entries older than 7 days' \
 		as_root journalctl --vacuum-time=7d
-	[ -d /var/log ] && task sensitive 'Logs: delete rotated/compressed files in /var/log' \
-		as_root find /var/log -xdev -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' \) -delete
+	[ -d /var/log ] && task sensitive 'Logs: delete rotated logs in /var/log older than 7 days' \
+		as_root find /var/log -xdev -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' \) -mtime +7 -delete
 	[ -d "${HOME}/.local/share/Trash" ] && task sensitive 'Trash: empty it' \
 		empty_dir "${HOME}/.local/share/Trash"
-	[ -d /tmp ] && task sensitive 'Temp: delete files in /tmp older than 7 days' delete_older_than 7 /tmp
-	[ -d /var/tmp ] && task sensitive 'Temp: delete files in /var/tmp older than 30 days' delete_older_than 30 /var/tmp
+	[ -d /tmp ] && task sensitive 'Temp: delete /tmp files older than 7 days' delete_older_than 7 /tmp
+	[ -d /var/tmp ] && task sensitive 'Temp: delete /var/tmp files older than 30 days' delete_older_than 30 /var/tmp
 	return 0
 }
 
@@ -207,7 +207,7 @@ macos_tasks() {
 	task sensitive 'Logs: empty ~/Library/Logs' empty_dir "${HOME}/Library/Logs"
 	task sensitive 'Logs: empty /Library/Logs' empty_dir --root /Library/Logs
 	[ -d "${HOME}/.Trash" ] && task sensitive 'Trash: empty it' empty_dir "${HOME}/.Trash"
-	[ -d /tmp ] && task sensitive 'Temp: delete files in /tmp older than 7 days' delete_older_than 7 /tmp
+	[ -d /tmp ] && task sensitive 'Temp: delete /tmp files older than 7 days' delete_older_than 7 /tmp
 	return 0
 }
 
