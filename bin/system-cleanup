@@ -61,7 +61,8 @@ as_root() {
 	if [ "$(id -u)" -eq 0 ]; then
 		"$@"
 	elif [ "${sudo_ok}" -eq 1 ]; then
-		sudo -n "$@"
+		# On a terminal, let sudo prompt again if its cached credentials expired
+		if [ "${interactive}" -eq 1 ]; then sudo "$@"; else sudo -n "$@"; fi
 	else
 		echo '   ⏭️ Needs root, skipped.' >&2
 		return 1
