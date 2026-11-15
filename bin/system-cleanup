@@ -166,26 +166,26 @@ select_tasks() {
 docker_ready() { have docker && docker info >/dev/null 2>&1; }
 
 linux_tasks() {
-	docker_ready && task safe 'Docker: remove unused images, containers, networks and build cache' \
+	docker_ready && task safe 'Docker: delete unused images, containers, networks and build cache' \
 		docker system prune -f -a
-	docker_ready && task sensitive 'Docker: remove unused volumes (may hold data!)' \
+	docker_ready && task sensitive 'Docker: delete unused volumes (may hold data)' \
 		docker volume prune -f
 
-	have apt-get && task safe 'APT: clean the package cache' as_root apt-get clean
-	have apt-get && task sensitive 'APT: remove unused packages' as_root apt-get autoremove -y
-	have npm && task safe 'npm: clean the cache' npm cache clean --force
-	have pnpm && task safe 'pnpm: prune the store' pnpm store prune
-	have yarn && task safe 'Yarn: clean the cache' yarn cache clean
-	have pip && task safe 'pip: purge the cache' pip cache purge
-	have go && task safe 'Go: clean the build cache' go clean -cache
+	have apt-get && task safe 'APT: delete downloaded package files' as_root apt-get clean
+	have apt-get && task sensitive 'APT: delete unused packages' as_root apt-get autoremove -y
+	have npm && task safe 'npm: delete cache' npm cache clean --force
+	have pnpm && task safe 'pnpm: delete unreferenced store packages' pnpm store prune
+	have yarn && task safe 'Yarn: delete cache' yarn cache clean
+	have pip && task safe 'pip: delete cache' pip cache purge
+	have go && task safe 'Go: delete build cache' go clean -cache
 
-	[ -d "${HOME}/.cache" ] && task safe 'Empty ~/.cache' empty_dir "${HOME}/.cache"
+	[ -d "${HOME}/.cache" ] && task safe 'Cache: delete ~/.cache contents' empty_dir "${HOME}/.cache"
 
 	have journalctl && task sensitive 'Logs: delete journal entries older than 7 days' \
 		as_root journalctl --vacuum-time=7d
 	[ -d /var/log ] && task sensitive 'Logs: delete rotated logs in /var/log older than 7 days' \
 		as_root find /var/log -xdev -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' \) -mtime +7 -delete
-	[ -d "${HOME}/.local/share/Trash" ] && task sensitive 'Trash: empty it' \
+	[ -d "${HOME}/.local/share/Trash" ] && task sensitive 'Trash: delete trashed files' \
 		empty_dir "${HOME}/.local/share/Trash"
 	[ -d /tmp ] && task sensitive 'Temp: delete /tmp files older than 7 days' delete_older_than 7 /tmp
 	[ -d /var/tmp ] && task sensitive 'Temp: delete /var/tmp files older than 30 days' delete_older_than 30 /var/tmp
@@ -193,27 +193,27 @@ linux_tasks() {
 }
 
 macos_tasks() {
-	docker_ready && task safe 'Docker: remove unused images, containers, networks and build cache' \
+	docker_ready && task safe 'Docker: delete unused images, containers, networks and build cache' \
 		docker system prune -f -a
-	docker_ready && task sensitive 'Docker: remove unused volumes (may hold data!)' \
+	docker_ready && task sensitive 'Docker: delete unused volumes (may hold data)' \
 		docker volume prune -f
 
-	have brew && task safe 'Homebrew: remove old versions and cache' brew cleanup --prune=all -s
-	have npm && task safe 'npm: clean the cache' npm cache clean --force
-	have pnpm && task safe 'pnpm: prune the store' pnpm store prune
-	have yarn && task safe 'Yarn: clean the cache' yarn cache clean
-	have pip && task safe 'pip: purge the cache' pip cache purge
-	have go && task safe 'Go: clean the build cache' go clean -cache
+	have brew && task safe 'Homebrew: delete old versions and cache' brew cleanup --prune=all -s
+	have npm && task safe 'npm: delete cache' npm cache clean --force
+	have pnpm && task safe 'pnpm: delete unreferenced store packages' pnpm store prune
+	have yarn && task safe 'Yarn: delete cache' yarn cache clean
+	have pip && task safe 'pip: delete cache' pip cache purge
+	have go && task safe 'Go: delete build cache' go clean -cache
 
 	# /System/Library/Caches is protected by SIP and managed by the OS: left alone
-	task safe 'Empty ~/Library/Caches' empty_dir "${HOME}/Library/Caches"
-	task safe 'Empty /Library/Caches' empty_dir --root /Library/Caches
-	[ -d "${HOME}/Library/Developer/Xcode/DerivedData" ] && task safe 'Empty Xcode DerivedData' \
+	task safe 'Cache: delete ~/Library/Caches contents' empty_dir "${HOME}/Library/Caches"
+	task safe 'Cache: delete /Library/Caches contents' empty_dir --root /Library/Caches
+	[ -d "${HOME}/Library/Developer/Xcode/DerivedData" ] && task safe 'Xcode: delete DerivedData' \
 		empty_dir "${HOME}/Library/Developer/Xcode/DerivedData"
 
-	task sensitive 'Logs: empty ~/Library/Logs' empty_dir "${HOME}/Library/Logs"
-	task sensitive 'Logs: empty /Library/Logs' empty_dir --root /Library/Logs
-	[ -d "${HOME}/.Trash" ] && task sensitive 'Trash: empty it' empty_dir "${HOME}/.Trash"
+	task sensitive 'Logs: delete ~/Library/Logs contents' empty_dir "${HOME}/Library/Logs"
+	task sensitive 'Logs: delete /Library/Logs contents' empty_dir --root /Library/Logs
+	[ -d "${HOME}/.Trash" ] && task sensitive 'Trash: delete trashed files' empty_dir "${HOME}/.Trash"
 	[ -d /tmp ] && task sensitive 'Temp: delete /tmp files older than 7 days' delete_older_than 7 /tmp
 	return 0
 }
