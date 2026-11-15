@@ -34,17 +34,9 @@ install_binaries() {
 	done
 }
 
-# Symlinked so that the script can locate the dotfiles repo
-install_update_script() {
-	bin_dir="${HOME}/.local/bin"
-	mkdir -p "${bin_dir}"
-	ln -sf "${script_dir}/update.sh" "${bin_dir}/dotfiles-update"
-}
-
 install_dotfile .gitconfig
 install_dotfile .gitconfig.work
 install_binaries
-install_update_script
 
 # Shell config depends on the OS
 case "$(uname -s)" in

@@ -1,43 +1,89 @@
 #!/bin/sh
+# Pull the latest changes of the dotfiles git repo and reinstall the dotfiles.
+#
+# Usage: dotfiles-update [-h|--help]
+#
+# The repo (on the main branch, with a clean working directory) is updated with
+# a fast-forward only pull, its submodules are updated, then its install.sh
+# script is run.
+#
+# Options:
+# - -h, --help: show usage.
+#
+# Environment:
+# - DOTFILES_DIR: directory of the dotfiles git repo. (default: ~/.dotfiles)
 set -eu
 
 DOTFILES_DIR="${DOTFILES_DIR:-${HOME}/.dotfiles}"
 
-[ -d "${DOTFILES_DIR}" ] || {
-	echo "⚠️ Dotfiles directory not found." >&2
-	exit 1
+usage() {
+	echo "Usage: ${0##*/} [-h|--help]"
 }
 
-CDPATH= cd "${DOTFILES_DIR}" || {
-	echo "❌ Failed to change directory to dotfiles." >&2
-	exit 1
-}
+# Wrapped in a function so that the whole script is parsed before running,
+# since install.sh overwrites this very file while it is executing.
+main() {
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			-h|--help)
+				usage
+				return 0
+				;;
+			*)
+				usage >&2
+				return 1
+				;;
+		esac
+	done
 
-# Verify that the repository is on the main branch
-current_branch="$(git symbolic-ref --short -q HEAD || true)"
-[ "${current_branch}" = 'main' ] || {
-	echo "⚠️ Dotfiles repository is not on the main branch." >&2
-	exit 1
-}
-
-# Pull latest changes from the main branch
-git pull -q --ff-only || {
-	echo "❌ Failed to pull latest changes." >&2
-	exit 1
-}
-
-# Update submodules if any
-git submodule update -q --init --recursive || {
-	echo "❌ Failed to update submodules." >&2
-	exit 1
-}
-
-# Install updated dotfiles
-if [ -f "install.sh" ]; then
-	sh install.sh || {
-		echo "❌ Failed to install updated dotfiles." >&2
-		exit 1
+	[ -d "${DOTFILES_DIR}" ] || {
+		echo "⚠️ Dotfiles directory not found: ${DOTFILES_DIR}" >&2
+		return 1
 	}
-fi
 
-echo "✅ Dotfiles update completed successfully."
+	if ! git -C "${DOTFILES_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+		echo "❌ Not a git repository: ${DOTFILES_DIR}" >&2
+		return 2
+	fi
+
+	if [ ! -f "${DOTFILES_DIR}/install.sh" ]; then
+		echo "❌ Install script not found: ${DOTFILES_DIR}/install.sh" >&2
+		return 2
+	fi
+
+	# Verify that the repository is on the main branch
+	current_branch="$(git -C "${DOTFILES_DIR}" symbolic-ref --short -q HEAD || true)"
+	[ "${current_branch}" = 'main' ] || {
+		echo "⚠️ Dotfiles repository is not on the main branch." >&2
+		return 1
+	}
+
+	if [ -n "$(git -C "${DOTFILES_DIR}" status --porcelain)" ]; then
+		echo '❌ Working directory is not clean. Please commit or stash your changes before running this script.' >&2
+		return 1
+	fi
+
+	# Pull latest changes from the main branch
+	git -C "${DOTFILES_DIR}" pull -q --ff-only || {
+		echo "❌ Failed to pull latest changes." >&2
+		return 1
+	}
+	echo '✅ Pulled latest changes.'
+
+	# Update submodules if any
+	git -C "${DOTFILES_DIR}" submodule update -q --init --recursive || {
+		echo "❌ Failed to update submodules." >&2
+		return 1
+	}
+
+	# Install updated dotfiles
+	sh "${DOTFILES_DIR}/install.sh" || {
+		echo "❌ Failed to install updated dotfiles." >&2
+		return 1
+	}
+
+	echo "✅ Dotfiles update completed successfully."
+}
+
+main "$@"
+exit
