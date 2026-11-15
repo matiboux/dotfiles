@@ -249,6 +249,11 @@ leave_screen() {
 
 cursor=1
 
+# Print a key hint: the key as a highlighted badge, then its action
+hint() {
+	printf '\033[1;7m %s \033[0m %s   ' "$1" "$2"
+}
+
 print_menu() {
 	# Clear the screen and move the cursor to the top-left corner
 	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
@@ -266,7 +271,17 @@ print_menu() {
 		fi
 		i=$((i + 1))
 	done
-	printf '\r\n↑/↓ move · space toggle · 1-9 toggle · a all · s safe only · n none · enter run · q quit\r\n'
+	printf '\r\n'
+	hint '↑↓' 'move'
+	hint 'SPACE' 'toggle'
+	hint '1-9' 'toggle directly'
+	printf '\r\n'
+	hint 'A' 'all'
+	hint 'S' 'safe only'
+	hint 'N' 'none'
+	hint 'ENTER' 'run'
+	hint 'Q' 'quit'
+	printf '\r\n'
 }
 
 # Read one byte as hexadecimal (empty on end of input)
