@@ -2,7 +2,7 @@
 # Free disk space by cleaning caches, temporary files, logs and unused data.
 # Supports Linux and macOS.
 #
-# Usage: system-cleanup [-y|--yes] [-s|--safe] [-n|--dry-run] [-h|--help]
+# Usage: system-cleanup [-y|--yes] [-s|--safe] [-n|--dry-run] [-v|--verbose] [-h|--help]
 #
 # A menu lists the available tasks, to tick or untick (arrow keys and space)
 # before running them.
@@ -19,16 +19,21 @@
 # - -y, --yes: no menu, run all tasks, safe and sensitive.
 # - -s, --safe: no menu, run safe tasks only.
 # - -n, --dry-run: only list the tasks that would run.
+# - -v, --verbose: show the full output of each task.
 # - -h, --help: show usage.
+#
+# Each task prints a one-line summary (space freed). Its output is hidden, and
+# only shown when the task fails or with --verbose.
 #
 # Without a terminal, the menu is skipped and only safe tasks run.
 set -eu
 
 mode=''
 dry_run=0
+verbose=0
 
 usage() {
-	echo "Usage: ${0##*/} [-y|--yes] [-s|--safe] [-n|--dry-run] [-h|--help]"
+	echo "Usage: ${0##*/} [-y|--yes] [-s|--safe] [-n|--dry-run] [-v|--verbose] [-h|--help]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -36,6 +41,7 @@ while [ "$#" -gt 0 ]; do
 		-y|--yes) mode='all' ;;
 		-s|--safe) mode='safe' ;;
 		-n|--dry-run) dry_run=1 ;;
+		-v|--verbose) verbose=1 ;;
 		-h|--help)
 			usage
 			exit 0
@@ -359,6 +365,14 @@ if [ "${selected}" -eq 0 ]; then
 	exit 0
 fi
 
+log_file=''
+keepalive_pid=''
+
+cleanup() {
+	[ -z "${keepalive_pid}" ] || kill "${keepalive_pid}" 2>/dev/null || true
+	[ -z "${log_file}" ] || rm -f "${log_file}"
+}
+
 # Ask for sudo once, and keep it alive for the whole run
 if [ "${needs_root}" -eq 1 ] && [ "${sudo_ok}" -eq 0 ] && [ "${dry_run}" -eq 0 ] \
 	&& have sudo && [ "${interactive}" -eq 1 ]; then
@@ -372,11 +386,26 @@ if [ "${needs_root}" -eq 1 ] && [ "${sudo_ok}" -eq 0 ] && [ "${dry_run}" -eq 0 ]
 			done
 		) &
 		keepalive_pid=$!
-		trap 'kill "${keepalive_pid}" 2>/dev/null || true' EXIT INT TERM
 	else
 		echo '⚠️ No sudo access: tasks requiring root will be skipped.' >&2
 	fi
 fi
+
+# Task output is captured in a temporary file
+if [ "${dry_run}" -eq 0 ] && [ "${verbose}" -eq 0 ]; then
+	log_file="$(mktemp)"
+fi
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# Format an amount of kilobytes
+format_kb() {
+	if [ "$1" -ge 1024 ]; then
+		echo "~$(($1 / 1024)) MB"
+	else
+		echo '<1 MB'
+	fi
+}
 
 before="$(avail_kb)"
 count_done=0
@@ -389,11 +418,24 @@ while [ "${i}" -le "${task_count}" ]; do
 		echo "🧹 $(get "task_desc_${i}")"
 		if [ "${dry_run}" -eq 1 ]; then
 			echo '   (dry run)'
-		elif eval "$(get "task_cmd_${i}")"; then
-			count_done=$((count_done + 1))
 		else
-			echo '   ❌ Failed, continuing.' >&2
-			count_failed=$((count_failed + 1))
+			task_before="$(avail_kb)"
+			status=0
+			if [ "${verbose}" -eq 1 ]; then
+				eval "$(get "task_cmd_${i}")" || status=$?
+			else
+				eval "$(get "task_cmd_${i}")" >"${log_file}" 2>&1 || status=$?
+			fi
+			if [ "${status}" -eq 0 ]; then
+				task_freed=$(( $(avail_kb) - task_before ))
+				[ "${task_freed}" -ge 0 ] || task_freed=0
+				echo "   Done, $(format_kb "${task_freed}") freed."
+				count_done=$((count_done + 1))
+			else
+				echo "   Failed (exit ${status}), continuing."
+				[ "${verbose}" -eq 1 ] || tail -n 10 "${log_file}" | sed 's/^ *//; s/^/   | /'
+				count_failed=$((count_failed + 1))
+			fi
 		fi
 	fi
 	i=$((i + 1))
