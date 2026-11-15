@@ -429,7 +429,7 @@ while [ "${i}" -le "${task_count}" ]; do
 			if [ "${status}" -eq 0 ]; then
 				task_freed=$(( $(avail_kb) - task_before ))
 				[ "${task_freed}" -ge 0 ] || task_freed=0
-				echo "   Done, $(format_kb "${task_freed}") freed."
+				[ "${task_freed}" -eq 0 ] || echo "   Done, $(format_kb "${task_freed}") freed."
 				count_done=$((count_done + 1))
 			else
 				echo "   Failed (exit ${status}), continuing."
