@@ -222,9 +222,31 @@ esac
 
 # --- Menu ---
 
+# The menu is drawn on the terminal's alternate screen, redrawn in place, so it
+# never fills the scrollback and leaves the terminal as it was once closed.
+screen_on=0
+
+enter_screen() {
+	if [ -t 1 ]; then
+		printf '\033[?1049h'
+		screen_on=1
+	fi
+}
+
+leave_screen() {
+	if [ "${screen_on}" -eq 1 ]; then
+		printf '\033[?1049l'
+		screen_on=0
+	fi
+}
+
+notice=''
+
 print_menu() {
-	echo
+	# Clear the screen and move the cursor to the top-left corner
+	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
 	echo 'Cleanup tasks ([x] = will run, ⚠️ = sensitive):'
+	echo
 	i=1
 	while [ "${i}" -le "${task_count}" ]; do
 		mark=' '
@@ -235,9 +257,11 @@ print_menu() {
 		i=$((i + 1))
 	done
 	echo
+	[ -z "${notice}" ] || echo "${notice}"
+	notice=''
 }
 
-run_menu() {
+menu_loop() {
 	while true; do
 		print_menu
 		printf 'Toggle by number (e.g. "3 5"), [a]ll, [s]afe only, [n]one, [Enter] run, [q]uit: '
@@ -248,8 +272,8 @@ run_menu() {
 				a) select_tasks all ;;
 				s) select_tasks safe ;;
 				n) select_tasks none ;;
-				q) echo 'Aborted.'; exit 0 ;;
-				*[!0-9]*|'') echo "Ignored: ${token}" ;;
+				q) leave_screen; echo 'Aborted.'; exit 0 ;;
+				*[!0-9]*|'') notice="Ignored: ${token}" ;;
 				*)
 					if [ "${token}" -ge 1 ] && [ "${token}" -le "${task_count}" ]; then
 						if [ "$(get "task_sel_${token}")" = 1 ]; then
@@ -258,12 +282,21 @@ run_menu() {
 							eval "task_sel_${token}=1"
 						fi
 					else
-						echo "Ignored: ${token}"
+						notice="Ignored: ${token}"
 					fi
 					;;
 			esac
 		done
 	done
+}
+
+run_menu() {
+	enter_screen
+	trap 'leave_screen' EXIT
+	trap 'leave_screen; exit 130' INT TERM
+	menu_loop
+	leave_screen
+	trap - EXIT INT TERM
 }
 
 case "${mode}" in
