@@ -4,7 +4,8 @@
 #
 # Usage: system-cleanup [-y|--yes] [-s|--safe] [-n|--dry-run] [-h|--help]
 #
-# A menu lists the available tasks, to tick or untick before running them.
+# A menu lists the available tasks, to tick or untick (arrow keys and space)
+# before running them.
 # Tasks are split in two levels:
 # - safe: caches that are rebuilt on demand (package managers, ~/.cache, docker
 #   build cache and unused images...). Ticked by default.
@@ -225,68 +226,91 @@ esac
 # The menu is drawn on the terminal's alternate screen, redrawn in place, so it
 # never fills the scrollback and leaves the terminal as it was once closed.
 screen_on=0
+saved_stty=''
 
 enter_screen() {
+	saved_stty="$(stty -g 2>/dev/null || true)"
+	stty -icanon -echo min 1 time 0 2>/dev/null || true
 	if [ -t 1 ]; then
-		printf '\033[?1049h'
+		# Alternate screen, hidden cursor
+		printf '\033[?1049h\033[?25l'
 		screen_on=1
 	fi
 }
 
 leave_screen() {
+	[ -z "${saved_stty}" ] || stty "${saved_stty}" 2>/dev/null || true
+	saved_stty=''
 	if [ "${screen_on}" -eq 1 ]; then
-		printf '\033[?1049l'
+		printf '\033[?25h\033[?1049l'
 		screen_on=0
 	fi
 }
 
-notice=''
+cursor=1
 
 print_menu() {
 	# Clear the screen and move the cursor to the top-left corner
 	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
-	echo 'Cleanup tasks ([x] = will run, ⚠️ = sensitive):'
-	echo
+	printf 'Cleanup tasks (⚠️  = sensitive)\r\n\r\n'
 	i=1
 	while [ "${i}" -le "${task_count}" ]; do
 		mark=' '
 		[ "$(get "task_sel_${i}")" = 1 ] && mark='x'
 		flag='  '
 		[ "$(get "task_level_${i}")" = 'sensitive' ] && flag='⚠️ '
-		printf ' [%s] %2d) %s%s\n' "${mark}" "${i}" "${flag}" "$(get "task_desc_${i}")"
+		if [ "${i}" -eq "${cursor}" ]; then
+			printf '\033[7m > [%s] %s%s \033[0m\r\n' "${mark}" "${flag}" "$(get "task_desc_${i}")"
+		else
+			printf '   [%s] %s%s\r\n' "${mark}" "${flag}" "$(get "task_desc_${i}")"
+		fi
 		i=$((i + 1))
 	done
-	echo
-	[ -z "${notice}" ] || echo "${notice}"
-	notice=''
+	printf '\r\n↑/↓ move · space toggle · 1-9 toggle · a all · s safe only · n none · enter run · q quit\r\n'
+}
+
+# Read one byte as hexadecimal (empty on end of input)
+read_hex() {
+	dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+
+toggle_task() {
+	if [ "$(get "task_sel_$1")" = 1 ]; then
+		eval "task_sel_$1=0"
+	else
+		eval "task_sel_$1=1"
+	fi
 }
 
 menu_loop() {
 	while true; do
 		print_menu
-		printf 'Toggle by number (e.g. "3 5"), [a]ll, [s]afe only, [n]one, [Enter] run, [q]uit: '
-		read -r input || input='q'
-		[ -n "${input}" ] || return 0
-		for token in ${input}; do
-			case "${token}" in
-				a) select_tasks all ;;
-				s) select_tasks safe ;;
-				n) select_tasks none ;;
-				q) leave_screen; echo 'Aborted.'; exit 0 ;;
-				*[!0-9]*|'') notice="Ignored: ${token}" ;;
-				*)
-					if [ "${token}" -ge 1 ] && [ "${token}" -le "${task_count}" ]; then
-						if [ "$(get "task_sel_${token}")" = 1 ]; then
-							eval "task_sel_${token}=0"
-						else
-							eval "task_sel_${token}=1"
-						fi
-					else
-						notice="Ignored: ${token}"
-					fi
-					;;
-			esac
-		done
+		key="$(read_hex)"
+		case "${key}" in
+			''|71) leave_screen; echo 'Aborted.'; exit 0 ;; # end of input, q
+			0a|0d) return 0 ;; # enter
+			20) toggle_task "${cursor}" ;; # space
+			61) select_tasks all ;; # a
+			73) select_tasks safe ;; # s
+			6e) select_tasks none ;; # n
+			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
+			6a) [ "${cursor}" -ge "${task_count}" ] || cursor=$((cursor + 1)) ;; # j
+			3[1-9])
+				digit=$(( 0x${key} - 0x30 ))
+				[ "${digit}" -gt "${task_count}" ] || toggle_task "${digit}"
+				;;
+			1b)
+				# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
+				stty min 0 time 1 2>/dev/null || true
+				second="$(read_hex)"
+				third="$(read_hex)"
+				stty min 1 time 0 2>/dev/null || true
+				case "${second}:${third}" in
+					5b:41|4f:41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
+					5b:42|4f:42) [ "${cursor}" -ge "${task_count}" ] || cursor=$((cursor + 1)) ;;
+				esac
+				;;
+		esac
 	done
 }
 
