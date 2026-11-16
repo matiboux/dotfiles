@@ -227,7 +227,9 @@ if [ -n "${found}" ]; then
 			continue
 		fi
 		bytes=$(dir_bytes "${d}")
-		items="$(get "task_items_${i}")${d}
+		# No command substitution here: it would strip the newline ending the previous item
+		eval "items=\${task_items_${i}}"
+		items="${items}${d}
 "
 		eval "task_items_${i}=\${items}"
 		eval "task_found_${i}=$(( $(get "task_found_${i}") + 1 ))"
@@ -247,7 +249,9 @@ describe() {
 		gc) unit='repositor' ;;
 		*) unit='director' ;;
 	esac
-	printf '%s (%s): %s %s%s, %s' "$(get "task_label_$1")" "${names}" "${found_count}" "${unit}" "${plural}" \
+	label=$(get "task_label_$1")
+	[ "$(get "task_action_$1")" = 'gc' ] || label="${label} (${names})"
+	printf '%s: %s %s%s, %s' "${label}" "${found_count}" "${unit}" "${plural}" \
 		"$(human_size "$(get "task_bytes_$1")")"
 }
 
@@ -478,7 +482,11 @@ for i in ${visible}; do
 ${items}
 EOF
 	if [ "${dry_run}" -eq 0 ]; then
-		echo "   Done, $(human_size "${task_freed}") freed."
+		if [ "${task_failed}" -eq 0 ]; then
+			echo "   Done, $(human_size "${task_freed}") freed."
+		else
+			echo "   ${task_failed} failure(s), $(human_size "${task_freed}") freed."
+		fi
 		total_freed=$((total_freed + task_freed))
 		if [ "${task_failed}" -eq 0 ]; then
 			count_done=$((count_done + 1))
