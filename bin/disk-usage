@@ -159,7 +159,7 @@ echo "$big" | head -n "$count" | humanize
 
 echo
 echo "== Summary by extension (> ${min_mb}MB) =="
-echo "$big" | awk '{
+ext_out=$(echo "$big" | awk -v all="$all" '{
 	s = $1; sub(/^[0-9]+ /, "")
 	path = $0
 	n = split(path, parts, "/"); f = parts[n]
@@ -171,13 +171,20 @@ echo "$big" | awk '{
 }
 END {
 	for (e in c) {
-		if (c[e] > 1) print t[e] " " c[e] " " e
+		if (c[e] > 1 || all == 1) print t[e] " " c[e] " " e
 		else { oc++; ot += t[e] }
 	}
-	if (oc > 0) print ot " " oc " other (single files)"
-}' | sort -nr | awk '{
-	s = $1; n = $2; e = $3 ($4 != "" ? " " $4 : "") ($5 != "" ? " " $5 : "")
+	if (oc > 0) print "other " ot " " oc
+}')
+echo "$ext_out" | grep -v '^other ' | sort -nr | awk '{
+	s = $1; n = $2; e = $3 ($4 != "" ? " " $4 : "")
 	split("B K M G T P", u, " "); i = 1
 	while (s >= 1024 && i < 6) { s /= 1024; i++ }
-	printf "%6d files  %6.1f%s  %s\n", n, s, u[i], e
+	printf "%6.1f%s  %4d file%s  %s\n", s, u[i], n, (n > 1 ? "s" : " "), e
+}'
+echo "$ext_out" | grep '^other ' | awk '{
+	s = $2; n = $3
+	split("B K M G T P", u, " "); i = 1
+	while (s >= 1024 && i < 6) { s /= 1024; i++ }
+	printf "(+ %d file%s for %.1f%s, use --all to show them)\n", n, (n > 1 ? "s" : ""), s, u[i]
 }'
