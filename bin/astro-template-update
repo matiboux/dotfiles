@@ -91,7 +91,8 @@ cleanup_trap() {
 	fi
 }
 
-trap 'cleanup_trap' EXIT INT TERM
+trap 'cleanup_trap' EXIT
+trap 'exit 130' INT TERM
 
 sanitize_err() {
 	tr '\n' ' ' <"$1" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
@@ -119,8 +120,15 @@ else
 	if case " ${PRIMARY_GIT_BRANCHES} " in *" ${CURRENT_BRANCH} "*) true ;; *) false ;; esac; then
 		# Current branch is a primary branch
 
-		# Merge with latest updates from remote
-		git_repo merge --ff-only "${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}"
+		# Merge with latest updates from remote (if the branch exists on the remote)
+		if git_repo show-ref --verify --quiet "refs/remotes/${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}"; then
+			if ! git_repo merge --ff-only "${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}" > /dev/null 2>&1; then
+				echo "❌ Cannot fast-forward '${CURRENT_BRANCH}' to '${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}'. Please sync the branch manually and try again."
+				exit 1
+			fi
+		else
+			echo "⚠️ Remote branch '${DEFAULT_GIT_REMOTE}/${CURRENT_BRANCH}' not found, skipping merge."
+		fi
 
 		# Create update branch from the current branch
 		git_repo checkout -b "${UPDATE_GIT_BRANCH}" "${CURRENT_BRANCH}"
@@ -272,6 +280,9 @@ cp "${TEMPLATE_PATH}/app/docker/"*.* "${WORKING_DIR}/${APP_DIR}/docker/"
 
 mkdir -p "${WORKING_DIR}/${APP_DIR}/nginx/"
 cp "${TEMPLATE_PATH}/app/nginx/"*.* "${WORKING_DIR}/${APP_DIR}/nginx/"
+
+mkdir -p "${WORKING_DIR}/${APP_DIR}/public/"
+cp "${TEMPLATE_PATH}/app/public/"*.html "${WORKING_DIR}/${APP_DIR}/public/"
 
 mkdir -p "${WORKING_DIR}/${APP_DIR}/src/"
 cp "${TEMPLATE_PATH}/app/src/"*.* "${WORKING_DIR}/${APP_DIR}/src/"
