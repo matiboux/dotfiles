@@ -151,15 +151,21 @@ if [ "${all}" -eq 0 ]; then
 		done |
 		awk '{ c[$2]++; t[$2] += $1 } END { for (n in c) print t[n] " " c[n] " " n }' |
 		sort -nr)
-	if [ -z "${excluded}" ]; then
-		echo 'None'
-	else
-		echo "${excluded}" | awk '{
+	# Only list the names reaching the size threshold.
+	excluded_shown=$(echo "${excluded}" | awk -v min="${min_mb}" 'NF && $1 >= min * 1048576')
+	excluded_hidden=$(( $(echo "${excluded}" | awk 'NF' | wc -l) - $(echo "${excluded_shown}" | awk 'NF' | wc -l) ))
+	if [ -n "${excluded_shown}" ]; then
+		echo "${excluded_shown}" | awk '{
 			s = $1; n = $2; e = $3
 			split("B K M G T P", u, " "); i = 1
 			while (s >= 1024 && i < 6) { s /= 1024; i++ }
 			printf "%6.1f%s  %4d dir%s  %s\n", s, u[i], n, (n > 1 ? "s" : " "), e
 		}'
+	elif [ "${excluded_hidden}" -eq 0 ]; then
+		echo 'None'
+	fi
+	if [ "${excluded_hidden}" -gt 0 ]; then
+		echo "(+ ${excluded_hidden} more under ${min_mb}MB hidden)"
 	fi
 fi
 
