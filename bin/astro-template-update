@@ -86,14 +86,6 @@ git_repo() {
 
 # ---
 
-# Check that the project already uses the template (version file exists)
-if [ "${FORCE}" -ne 1 ] && [ ! -f "${WORKING_DIR}/${APP_DIR}/.astro-template" ]; then
-	echo "❌ Template version file not found: ${APP_DIR}/.astro-template (use -f to force the update)" >&2
-	exit 1
-fi
-
-# ---
-
 TEMPLATE_PATH=''
 ERR_FILE=''
 SED_FILE=''
@@ -174,6 +166,14 @@ else
 
 	fi
 
+fi
+
+# ---
+
+# Check that the project already uses the template (version file exists on the update branch)
+if [ "${FORCE}" -ne 1 ] && [ ! -f "${WORKING_DIR}/${APP_DIR}/.astro-template" ]; then
+	echo "❌ Template version file not found: ${APP_DIR}/.astro-template (use -f to force the update)" >&2
+	exit 1
 fi
 
 # ---
