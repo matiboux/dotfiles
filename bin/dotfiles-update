@@ -95,9 +95,10 @@ main() {
 		echo "✅ Branch ${current_branch} already up to date."
 	else
 		commit_count="$(git -C "${DOTFILES_DIR}" rev-list --count "${old_head}..${new_head}")"
-		# e.g. "14 files changed, 1518 insertions(+), 105 deletions(-)"
-		diff_summary="$(git -C "${DOTFILES_DIR}" diff --shortstat "${old_head}" "${new_head}" | sed 's/^ *//')"
-		echo "✅ Updated branch ${current_branch}: pulled ${commit_count} commit(s) ($(git -C "${DOTFILES_DIR}" rev-parse --short "${old_head}")..$(git -C "${DOTFILES_DIR}" rev-parse --short "${new_head}")), ${diff_summary}."
+		# e.g. "14 files +1518 -105" (binary files count as 0 lines)
+		diff_summary="$(git -C "${DOTFILES_DIR}" diff --numstat "${old_head}" "${new_head}" \
+			| awk '{ f++; a += $1; d += $2 } END { printf "%d file%s +%d -%d", f, (f == 1 ? "" : "s"), a, d }')"
+		echo "✅ Updated ${current_branch}: ${commit_count} commit$([ "${commit_count}" = 1 ] || echo s), ${diff_summary}"
 	fi
 
 	# Update submodules if any
