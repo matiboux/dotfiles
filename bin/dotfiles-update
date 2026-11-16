@@ -11,10 +11,11 @@
 # - -h, --help: show usage.
 #
 # Environment:
-# - DOTFILES_DIR: directory of the dotfiles git repo. (default: ~/.dotfiles)
+# - DOTFILES_DIR: directory of the dotfiles git repo.
+#   (default: ~/dotfiles, then ~/.dotfiles)
 set -eu
 
-DOTFILES_DIR="${DOTFILES_DIR:-${HOME}/.dotfiles}"
+DOTFILES_REPO='matiboux/dotfiles'
 
 usage() {
 	echo "Usage: ${0##*/} [-h|--help]"
@@ -36,6 +37,15 @@ main() {
 		esac
 	done
 
+	# Locate the dotfiles directory
+	if [ -z "${DOTFILES_DIR:-}" ]; then
+		if [ -d "${HOME}/dotfiles" ]; then
+			DOTFILES_DIR="${HOME}/dotfiles"
+		else
+			DOTFILES_DIR="${HOME}/.dotfiles"
+		fi
+	fi
+
 	[ -d "${DOTFILES_DIR}" ] || {
 		echo "⚠️ Dotfiles directory not found: ${DOTFILES_DIR}" >&2
 		return 1
@@ -45,6 +55,14 @@ main() {
 		echo "❌ Not a git repository: ${DOTFILES_DIR}" >&2
 		return 2
 	fi
+
+	# Verify that the repository is ours
+	origin_url="$(git -C "${DOTFILES_DIR}" remote get-url origin 2>/dev/null || true)"
+	origin_slug="$(printf '%s' "${origin_url}" | tr '[:upper:]' '[:lower:]' | sed -E 's#\.git/?$##; s#^.*[:/]([^:/]+/[^:/]+)$#\1#')"
+	[ "${origin_slug}" = "${DOTFILES_REPO}" ] || {
+		echo "❌ Not the expected dotfiles repository (${DOTFILES_REPO}): ${DOTFILES_DIR}" >&2
+		return 2
+	}
 
 	if [ ! -f "${DOTFILES_DIR}/install.sh" ]; then
 		echo "❌ Install script not found: ${DOTFILES_DIR}/install.sh" >&2
