@@ -111,7 +111,6 @@ total=$(echo "$du_out" | awk -v d="$dir" '{
 }')
 [ -n "$total" ] || total=$(echo "$du_out" | sort -nr | awk 'NR == 1 { print $1 }')
 echo "Total: $(echo "$total ." | humanize | awk '{ print $1 }')"
-echo
 entries=$(echo "$du_out" | awk -v d="$dir" '{
 	s = $1; p = $0; sub(/^[0-9]+ /, "", p)
 	if (p != d) print
