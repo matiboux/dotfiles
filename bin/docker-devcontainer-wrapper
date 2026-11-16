@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_DOCKER="$(which docker)"
+CLAUDE_HOST_DIR="$HOME/.claude"        # your already-logged-in config
+CLAUDE_CONTAINER_DIR="/opt/claude-shared"
+
+args=("$@")
+
+# ---------- plain `docker run` / `docker create` ----------
+if [[ "${args[0]:-}" == "run" || "${args[0]:-}" == "create" ]]; then
+  sub="${args[0]}"
+  rest=("${args[@]:1}")
+  exec "$REAL_DOCKER" "$sub" \
+    -v "${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}" \
+    -e "CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}" \
+    "${rest[@]}"
+fi
+
+# ---------- `docker compose ...` ----------
+if [[ "${args[0]:-}" == "compose" ]]; then
+  compose_args=("${args[@]:1}")
+
+  files=()
+  passthrough=()
+  subcommand=""
+  subcommand_pos=-1
+  i=0
+  n=${#compose_args[@]}
+
+  while (( i < n )); do
+    a="${compose_args[$i]}"
+    case "$a" in
+      -f|--file)
+        files+=("${compose_args[$((i+1))]}")
+        passthrough+=("$a" "${compose_args[$((i+1))]}")
+        i=$((i+2))
+        ;;
+      up|run|create|start)
+        if [[ -z "$subcommand" ]]; then
+          subcommand="$a"
+          subcommand_pos=${#passthrough[@]}
+        fi
+        passthrough+=("$a")
+        i=$((i+1))
+        ;;
+      *)
+        passthrough+=("$a")
+        i=$((i+1))
+        ;;
+    esac
+  done
+
+  override_file=""
+  if [[ -n "$subcommand" && ${#files[@]} -gt 0 ]]; then
+    f_flags=()
+    for f in "${files[@]}"; do f_flags+=(-f "$f"); done
+
+    # Ask real docker/compose which services this project actually has
+    services="$("$REAL_DOCKER" compose "${f_flags[@]}" config --services 2>/dev/null || true)"
+
+    if [[ -n "$services" ]]; then
+      override_file="${TMPDIR:-/tmp}/claude-devcontainer-override-$$-${RANDOM}.yml"
+      : > "$override_file"
+      {
+        echo "services:"
+        while IFS= read -r svc; do
+          [[ -z "$svc" ]] && continue
+          cat <<SVC
+  ${svc}:
+    volumes:
+      - ${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}
+    environment:
+      CLAUDE_CONFIG_DIR: ${CLAUDE_CONTAINER_DIR}
+SVC
+        done <<< "$services"
+      } > "$override_file"
+
+      new_passthrough=()
+      for idx in "${!passthrough[@]}"; do
+        if [[ "$idx" -eq "$subcommand_pos" ]]; then
+          new_passthrough+=(-f "$override_file")
+        fi
+        new_passthrough+=("${passthrough[$idx]}")
+      done
+      passthrough=("${new_passthrough[@]}")
+    fi
+  fi
+
+  "$REAL_DOCKER" compose "${passthrough[@]}"
+  status=$?
+  [[ -n "$override_file" ]] && rm -f "$override_file"
+  exit $status
+fi
+
+# ---------- everything else (ps, logs, build, down, exec...) ----------
+exec "$REAL_DOCKER" "${args[@]}"
