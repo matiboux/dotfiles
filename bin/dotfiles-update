@@ -92,14 +92,14 @@ main() {
 	new_head="$(git -C "${DOTFILES_DIR}" rev-parse HEAD)"
 
 	if [ "${old_head}" = "${new_head}" ]; then
-		echo "✅ Branch ${current_branch} already up to date."
+		echo "✅ Dotfiles already up to date."
 	else
 		commit_count="$(git -C "${DOTFILES_DIR}" rev-list --count "${old_head}..${new_head}")"
 		# e.g. "14 files, +1518 -105" (binary files count as 0 lines)
 		diff_summary="$(git -C "${DOTFILES_DIR}" diff --numstat "${old_head}" "${new_head}" \
 			| awk '{ f++; a += $1; d += $2 } END { printf "%d file%s, +%d -%d", f, (f == 1 ? "" : "s"), a, d }')"
 		new_short="$(git -C "${DOTFILES_DIR}" rev-parse --short "${new_head}")"
-		echo "✅ Updated ${current_branch}: ${commit_count} commit$([ "${commit_count}" = 1 ] || echo s) (..${new_short}), ${diff_summary}"
+		echo "✅ Updated dotfiles: ${commit_count} commit$([ "${commit_count}" = 1 ] || echo s) (..${new_short}), ${diff_summary}"
 	fi
 
 	# Update submodules if any
