@@ -88,10 +88,12 @@ else
 	}
 fi
 
-# Turn a leading byte count into a human readable size.
+# Turn a leading byte count into a human readable size, and show the home
+# directory as ~ in the path (plain string match, no regex).
 humanize() {
-	awk '{
+	awk -v home="${HOME:-}" '{
 		s = $1; sub(/^[0-9]+ /, "")
+		if (home != "" && (index($0, home "/") == 1 || $0 == home)) $0 = "~" substr($0, length(home) + 1)
 		split("B K M G T P", u, " "); i = 1
 		while (s >= 1024 && i < 6) { s /= 1024; i++ }
 		if (i == 1) printf "%6d%s  %s\n", s, u[i], $0
@@ -99,7 +101,16 @@ humanize() {
 	}'
 }
 
-echo "== Depth 1 sizes: $dir =="
+# Same ~ replacement for a single path.
+tilde() {
+	case "$1" in
+		"${HOME:-/nonexistent}") echo '~' ;;
+		"${HOME:-/nonexistent}"/*) echo "~${1#"$HOME"}" ;;
+		*) echo "$1" ;;
+	esac
+}
+
+echo "== Depth 1 sizes: $(tilde "$dir") =="
 # "<bytes> <path>" lines, DIR itself included.
 du_out=$(du -k -d 1 "$dir" 2>/dev/null | awk '{
 	s = $1 * 1024; p = $0; sub(/^[0-9]+[ \t]+/, "", p)
@@ -155,14 +166,7 @@ if [ -z "$big" ]; then
 	echo "None"
 	exit 0
 fi
-# Show the home directory as ~ (plain string match, no regex).
-echo "$big" | head -n "$count" | humanize | awk -v home="${HOME:-}" '{
-	if (home != "") {
-		i = index($0, "  " home "/")
-		if (i > 0) $0 = substr($0, 1, i + 1) "~" substr($0, i + 2 + length(home))
-	}
-	print
-}'
+echo "$big" | head -n "$count" | humanize
 
 echo
 echo "== Summary by extension (> ${min_mb}MB) =="
