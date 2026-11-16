@@ -1,0 +1,91 @@
+#!/bin/sh
+# Show what takes space in a directory.
+# Supports Linux and macOS.
+#
+# Usage: disk-usage [-n COUNT] [-m SIZE_MB] [-h|--help] [DIR]
+#
+# Prints three sections for DIR (default: current directory):
+# - Depth 1: size of each entry, heaviest first.
+# - Heaviest files: the COUNT heaviest files (searched recursively) above the size threshold.
+# - Summary: number and total size of files above the threshold, by extension.
+#
+# Options:
+# - -n, --count COUNT: number of heaviest files to list (default: 5).
+# - -m, --min-size SIZE_MB: size threshold in MB (default: 10).
+# - -h, --help: show usage.
+set -eu
+
+count=5
+min_mb=10
+
+usage() {
+	echo "Usage: ${0##*/} [-n|--count COUNT] [-m|--min-size SIZE_MB] [-h|--help] [DIR]"
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-n|--count) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; count=$2; shift 2 ;;
+		-m|--min-size) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; min_mb=$2; shift 2 ;;
+		-h|--help) usage; exit 0 ;;
+		--) shift; break ;;
+		-*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+		*) break ;;
+	esac
+done
+
+dir=${1:-.}
+[ -d "$dir" ] || { echo "Not a directory: $dir" >&2; exit 1; }
+
+case "$count$min_mb" in
+	''|*[!0-9]*) echo "COUNT and SIZE_MB must be positive integers" >&2; exit 2 ;;
+esac
+
+# Print "<bytes> <path>" for a file list read from stdin (NUL-separated).
+if stat -c '%s' / >/dev/null 2>&1; then
+	file_sizes() { xargs -0 stat -c '%s %n'; }
+else
+	file_sizes() { xargs -0 stat -f '%z %N'; }
+fi
+
+# Turn a leading byte count into a human readable size.
+humanize() {
+	awk '{
+		s = $1; sub(/^[0-9]+ /, "")
+		split("B K M G T P", u, " "); i = 1
+		while (s >= 1024 && i < 6) { s /= 1024; i++ }
+		if (i == 1) printf "%6d%s  %s\n", s, u[i], $0
+		else printf "%6.1f%s  %s\n", s, u[i], $0
+	}'
+}
+
+echo "== Depth 1 sizes: $dir =="
+du -k -d 1 "$dir" 2>/dev/null | sort -nr | awk '{
+	s = $1 * 1024; p = $0; sub(/^[0-9]+[ \t]+/, "", p)
+	print s " " p
+}' | humanize
+
+echo
+echo "== Heaviest files (> ${min_mb}MB): top $count =="
+big=$(find "$dir" -type f -size +"${min_mb}"M -print0 2>/dev/null | file_sizes | sort -nr)
+if [ -z "$big" ]; then
+	echo "None"
+	exit 0
+fi
+echo "$big" | head -n "$count" | humanize
+
+echo
+echo "== Summary by extension (> ${min_mb}MB) =="
+echo "$big" | awk '{
+	s = $1; sub(/^[0-9]+ /, "")
+	n = split($0, parts, "/"); f = parts[n]
+	ext = (f ~ /\.[A-Za-z][A-Za-z0-9_]*$/) ? tolower(f) : ""
+	sub(/^.*\./, "", ext)
+	if (ext == "") ext = "(none)"
+	c[ext]++; t[ext] += s
+}
+END { for (e in c) print t[e] " " c[e] " " (e == "(none)" ? e : "." e) }' | sort -nr | awk '{
+	s = $1; n = $2; e = $3
+	split("B K M G T P", u, " "); i = 1
+	while (s >= 1024 && i < 6) { s /= 1024; i++ }
+	printf "%6d files  %6.1f%s  %s\n", n, s, u[i], e
+}'
