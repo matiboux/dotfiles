@@ -3,35 +3,72 @@
 # found in the subdirectories of a directory.
 # Supports Linux and macOS.
 #
-# Usage: dir-cleanup [-y|--yes] [-n|--dry-run] [-h|--help] [DIR]
+# Usage: dir-cleanup [-y|--yes] [-a|--all] [-t|--task KEY] [-d|--depth N]
+#                    [-n|--dry-run] [-v|--verbose] [-h|--help] [DIR]
 #
-# Searches DIR (default: current directory) recursively for directories named
-# like the ones in CLEANUP_DIRS below, lists them with their size, then asks
-# for confirmation before deleting them.
+# Searches DIR (default: current directory) recursively, then shows a menu of
+# what was found (arrow keys and space to tick or untick, enter to run).
+# Tasks, by key:
+# - venv: Python virtual environments (.venv, venv). Ticked by default.
+# - node: Node.js dependencies (node_modules). Ticked by default.
+# - pycache: Python bytecode caches (__pycache__). Ticked by default.
+# - caches: other caches (cache, .cache). Ticked by default.
+# - ipynb: Jupyter notebook checkpoints (.ipynb_checkpoints). Ticked by default.
+# - git: compact the git repositories (git gc). Unticked by default. It only
+#   rewrites the content of .git: working files, untracked files and ignored
+#   files are never touched.
+# The names are constants at the top of the script, easy to edit.
+#
+# Safety:
 # - A matching directory is deleted as a whole: what is inside it is not searched.
-# - DIR itself, .git directories (and what is inside) and symbolic links are never touched.
-# - Names like "cache" or "venv" can also be real source directories: check the list.
+# - A directory holding files tracked by git is never deleted.
+# - DIR itself, .git directories (and what is inside) and symbolic links are never deleted.
+# - Names like "cache" or "venv" can also be real source directories: check the menu.
+#
+# Without a terminal, the menu is skipped and --yes is required.
 #
 # Options:
-# - -y, --yes: delete without asking for confirmation.
-# - -n, --dry-run: only list what would be deleted.
+# - -y, --yes: no menu and no confirmation, run the selected tasks.
+# - -a, --all: select all the tasks, including the unticked ones.
+# - -t, --task KEY: select only these tasks (repeatable, or comma-separated).
+# - -d, --depth N: only search N levels below DIR.
+# - -n, --dry-run: list what would be done, delete nothing.
+# - -v, --verbose: list each directory as it is processed.
 # - -h, --help: show usage.
 set -eu
 
-# Directory names to delete (space-separated, exact names).
-CLEANUP_DIRS='.venv venv node_modules __pycache__ .cache cache'
+# Directory names of each task (space-separated, exact names).
+VENV_DIRS='.venv venv'
+NODE_DIRS='node_modules'
+PYCACHE_DIRS='__pycache__'
+CACHES_DIRS='cache .cache'
+IPYNB_DIRS='.ipynb_checkpoints'
+GIT_DIRS='.git'
 
 yes=0
+all=0
 dry_run=0
+verbose=0
+depth=''
+task_keys=' '
 
 usage() {
-	echo "Usage: ${0##*/} [-y|--yes] [-n|--dry-run] [-h|--help] [DIR]"
+	echo "Usage: ${0##*/} [-y|--yes] [-a|--all] [-t|--task KEY] [-d|--depth N] [-n|--dry-run] [-v|--verbose] [-h|--help] [DIR]"
+	echo 'Task keys: venv, node, pycache, caches, ipynb, git'
 }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		-y|--yes) yes=1; shift ;;
+		-a|--all) all=1; shift ;;
+		-t|--task)
+			[ "$#" -ge 2 ] || { usage >&2; exit 2; }
+			task_keys="${task_keys}$(echo "$2" | tr ',' ' ') "
+			shift 2
+			;;
+		-d|--depth) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; depth=$2; shift 2 ;;
 		-n|--dry-run) dry_run=1; shift ;;
+		-v|--verbose) verbose=1; shift ;;
 		-h|--help) usage; exit 0 ;;
 		--) shift; break ;;
 		-*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -39,12 +76,26 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+case "${depth}" in
+	*[!0-9]*|0) echo 'DEPTH must be a positive integer' >&2; exit 2 ;;
+esac
+
 dir=${1:-.}
 # Drop trailing slashes (but keep "/" itself).
 while [ "${dir}" != '/' ] && [ "${dir%/}" != "${dir}" ]; do
 	dir=${dir%/}
 done
 [ -d "${dir}" ] || { echo "Not a directory: ${dir}" >&2; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+interactive=0
+[ -t 0 ] && [ -t 1 ] && interactive=1
+
+# Read the variable named by $1
+get() {
+	eval "printf '%s' \"\${$1}\""
+}
 
 # Show the home directory as ~ in a path.
 tilde() {
@@ -70,74 +121,377 @@ human_size() {
 	}'
 }
 
-# Print the find expression matching the directory names: ( -name a -o -name b ... )
+# Size of a directory in bytes.
+dir_bytes() {
+	kb=$(du -sk "$1" 2>/dev/null | awk '{ print $1 }')
+	echo $(( ${kb:-0} * 1024 ))
+}
+
+# --- Task definitions (POSIX sh has no arrays: task_<field>_<index> variables) ---
+
+task_count=0
+
+# Register a task. Ticked-by-default tasks have the level "default", the others "optional".
+# Usage: task <key> <default|optional> <delete|gc> <label> <names>
+task() {
+	task_count=$((task_count + 1))
+	eval "task_key_${task_count}=\$1"
+	eval "task_level_${task_count}=\$2"
+	eval "task_action_${task_count}=\$3"
+	eval "task_label_${task_count}=\$4"
+	eval "task_names_${task_count}=\$5"
+	eval "task_items_${task_count}="
+	eval "task_found_${task_count}=0"
+	eval "task_bytes_${task_count}=0"
+	eval "task_sel_${task_count}=0"
+}
+
+task venv default delete 'Python virtual environments' "${VENV_DIRS}"
+task node default delete 'Node.js dependencies' "${NODE_DIRS}"
+task pycache default delete 'Python bytecode caches' "${PYCACHE_DIRS}"
+task caches default delete 'Other caches' "${CACHES_DIRS}"
+task ipynb default delete 'Jupyter notebook checkpoints' "${IPYNB_DIRS}"
+task git optional gc 'Git: compact repositories (git gc, working files untouched)' "${GIT_DIRS}"
+
+# Reject unknown task keys
+for key in ${task_keys}; do
+	i=1
+	known=0
+	while [ "${i}" -le "${task_count}" ]; do
+		[ "$(get "task_key_${i}")" = "${key}" ] && known=1
+		i=$((i + 1))
+	done
+	if [ "${known}" -eq 0 ]; then
+		echo "Unknown task key: ${key}" >&2
+		usage >&2
+		exit 2
+	fi
+done
+
+# --- Scan ---
+
+# Does the directory hold files tracked by git?
+has_tracked_files() {
+	have git || return 1
+	[ -n "$(git -C "${1%/*}" ls-files -- "${1##*/}" 2>/dev/null | head -n 1)" ]
+}
+
+# Print the find expression matching all the task directory names:
+# ( -name a -o -name b ... )
 names_expr() {
 	printf '('
 	sep=''
-	for name in ${CLEANUP_DIRS}; do
-		printf ' %s-name %s' "${sep}" "${name}"
-		sep='-o '
+	i=1
+	while [ "${i}" -le "${task_count}" ]; do
+		for name in $(get "task_names_${i}"); do
+			printf ' %s-name %s' "${sep}" "${name}"
+			sep='-o '
+		done
+		i=$((i + 1))
 	done
 	printf ' )\n'
 }
-# Unquoted on purpose: split into find arguments (no name contains a space or glob).
+
+# Index of the task owning a directory name (0 if none).
+task_of() {
+	i=1
+	while [ "${i}" -le "${task_count}" ]; do
+		case " $(get "task_names_${i}") " in
+			*" $1 "*) echo "${i}"; return ;;
+		esac
+		i=$((i + 1))
+	done
+	echo 0
+}
+
+depth_opt=''
+[ -z "${depth}" ] || depth_opt="-maxdepth ${depth}"
 expr=$(names_expr)
 
-# Matching directories: never go into .git, and stop at the first match.
+echo "Searching in $(tilde "${dir}")..." >&2
+# Matching directories: stop at the first match (no search inside), links are ignored.
 # shellcheck disable=SC2086
-found=$(find "${dir}" -mindepth 1 -type d \( -name .git -prune -o ${expr} -print -prune \) 2>/dev/null |
-	sort)
+found=$(find "${dir}" ${depth_opt} -mindepth 1 -type d ${expr} -print -prune 2>/dev/null | sort)
 
-if [ -z "${found}" ]; then
+skipped_tracked=''
+skipped_count=0
+if [ -n "${found}" ]; then
+	while IFS= read -r d; do
+		i=$(task_of "${d##*/}")
+		[ "${i}" -gt 0 ] || continue
+		# Deleting tracked files would lose work: such directories are left alone
+		if [ "$(get "task_action_${i}")" = 'delete' ] && has_tracked_files "${d}"; then
+			skipped_tracked="${skipped_tracked}${d}
+"
+			skipped_count=$((skipped_count + 1))
+			continue
+		fi
+		bytes=$(dir_bytes "${d}")
+		items="$(get "task_items_${i}")${d}
+"
+		eval "task_items_${i}=\${items}"
+		eval "task_found_${i}=$(( $(get "task_found_${i}") + 1 ))"
+		eval "task_bytes_${i}=$(( $(get "task_bytes_${i}") + bytes ))"
+	done <<EOF
+${found}
+EOF
+fi
+
+# Task description for the menu and the run
+describe() {
+	names=$(get "task_names_$1" | sed 's/ /, /g')
+	found_count=$(get "task_found_$1")
+	plural='ies'
+	[ "${found_count}" -eq 1 ] && plural='y'
+	case "$(get "task_action_$1")" in
+		gc) unit='repositor' ;;
+		*) unit='director' ;;
+	esac
+	printf '%s (%s): %s %s%s, %s' "$(get "task_label_$1")" "${names}" "${found_count}" "${unit}" "${plural}" \
+		"$(human_size "$(get "task_bytes_$1")")"
+}
+
+# Task menu entries only exist for what was found
+visible=''
+i=1
+while [ "${i}" -le "${task_count}" ]; do
+	[ "$(get "task_found_${i}")" -eq 0 ] || visible="${visible}${i} "
+	i=$((i + 1))
+done
+
+if [ -n "${skipped_tracked}" ]; then
+	echo "Skipped ${skipped_count} $([ "${skipped_count}" -eq 1 ] && echo directory || echo directories) holding git-tracked files." >&2
+	[ "${verbose}" -eq 0 ] || echo "${skipped_tracked}" | awk 'NF' | while IFS= read -r d; do
+		echo "  $(tilde "${d}")" >&2
+	done
+fi
+
+if [ -z "${visible}" ]; then
 	echo "Nothing to clean in $(tilde "${dir}")"
 	exit 0
 fi
 
-echo "== Directories found in $(tilde "${dir}") =="
-total=0
-while IFS= read -r d; do
-	kb=$(du -sk "${d}" 2>/dev/null | awk '{ print $1 }')
-	bytes=$(( ${kb:-0} * 1024 ))
-	total=$(( total + bytes ))
-	printf '%8s  %s\n' "$(human_size "${bytes}")" "$(tilde "${d}")"
-done <<EOF
-${found}
-EOF
-count=$(echo "${found}" | wc -l | tr -d ' ')
-echo
-echo "Total: $(human_size "${total}") in ${count} directories"
+# --- Selection ---
 
-if [ "${dry_run}" -eq 1 ]; then
-	echo '(dry run, nothing deleted)'
+# Select tasks: all, default (the ones ticked by default), none.
+select_tasks() {
+	for i in ${visible}; do
+		case "$1:$(get "task_level_${i}")" in
+			all:*|default:default) eval "task_sel_${i}=1" ;;
+			*) eval "task_sel_${i}=0" ;;
+		esac
+	done
+}
+
+if [ "${task_keys}" != ' ' ]; then
+	for i in ${visible}; do
+		case "${task_keys}" in
+			*" $(get "task_key_${i}") "*) eval "task_sel_${i}=1" ;;
+		esac
+	done
+elif [ "${all}" -eq 1 ]; then
+	select_tasks all
+else
+	select_tasks default
+fi
+
+# --- Menu ---
+
+# The menu is drawn on the terminal's alternate screen, redrawn in place, so it
+# never fills the scrollback and leaves the terminal as it was once closed.
+screen_on=0
+saved_stty=''
+
+enter_screen() {
+	saved_stty="$(stty -g 2>/dev/null || true)"
+	stty -icanon -echo min 1 time 0 2>/dev/null || true
+	if [ -t 1 ]; then
+		# Alternate screen, hidden cursor
+		printf '\033[?1049h\033[?25l'
+		screen_on=1
+	fi
+}
+
+leave_screen() {
+	[ -z "${saved_stty}" ] || stty "${saved_stty}" 2>/dev/null || true
+	saved_stty=''
+	if [ "${screen_on}" -eq 1 ]; then
+		printf '\033[?25h\033[?1049l'
+		screen_on=0
+	fi
+}
+
+# Position of the cursor in the visible tasks (1-based) and their number
+cursor=1
+visible_count=$(echo "${visible}" | wc -w | tr -d ' ')
+
+# Index of the task under a menu position
+task_at() {
+	echo "${visible}" | awk -v n="$1" '{ print $n }'
+}
+
+# Print a key hint: the key as a highlighted badge, then its action
+hint() {
+	printf '\033[1;7m %s \033[0m %s   ' "$1" "$2"
+}
+
+print_menu() {
+	# Clear the screen and move the cursor to the top-left corner
+	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
+	printf 'Directories to clean in %s\r\n\r\n' "$(tilde "${dir}")"
+	pos=1
+	for i in ${visible}; do
+		mark=' '
+		[ "$(get "task_sel_${i}")" = 1 ] && mark='x'
+		if [ "${pos}" -eq "${cursor}" ]; then
+			printf '\033[7m > [%s] %s \033[0m\r\n' "${mark}" "$(describe "${i}")"
+		else
+			printf '   [%s] %s\r\n' "${mark}" "$(describe "${i}")"
+		fi
+		pos=$((pos + 1))
+	done
+	printf '\r\n'
+	hint '↑↓' 'move'
+	hint 'SPACE' 'toggle'
+	printf '\r\n'
+	hint 'A' 'all'
+	hint 'D' 'defaults'
+	hint 'N' 'none'
+	hint 'ENTER' 'run'
+	hint 'Q' 'quit'
+	printf '\r\n'
+}
+
+# Read one byte as hexadecimal (empty on end of input)
+read_hex() {
+	dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+
+toggle_task() {
+	if [ "$(get "task_sel_$1")" = 1 ]; then
+		eval "task_sel_$1=0"
+	else
+		eval "task_sel_$1=1"
+	fi
+}
+
+menu_loop() {
+	while true; do
+		print_menu
+		key="$(read_hex)"
+		case "${key}" in
+			''|71) leave_screen; echo 'Aborted.'; exit 0 ;; # end of input, q
+			0a|0d) return 0 ;; # enter
+			20) toggle_task "$(task_at "${cursor}")" ;; # space
+			61) select_tasks all ;; # a
+			64) select_tasks default ;; # d
+			6e) select_tasks none ;; # n
+			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
+			6a) [ "${cursor}" -ge "${visible_count}" ] || cursor=$((cursor + 1)) ;; # j
+			1b)
+				# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
+				stty min 0 time 1 2>/dev/null || true
+				second="$(read_hex)"
+				third="$(read_hex)"
+				stty min 1 time 0 2>/dev/null || true
+				case "${second}:${third}" in
+					5b:41|4f:41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
+					5b:42|4f:42) [ "${cursor}" -ge "${visible_count}" ] || cursor=$((cursor + 1)) ;;
+				esac
+				;;
+		esac
+	done
+}
+
+run_menu() {
+	enter_screen
+	trap 'leave_screen' EXIT
+	trap 'leave_screen; exit 130' INT TERM
+	menu_loop
+	leave_screen
+	trap - EXIT INT TERM
+}
+
+if [ "${yes}" -eq 0 ]; then
+	if [ "${interactive}" -eq 1 ]; then
+		run_menu
+	elif [ "${dry_run}" -eq 0 ]; then
+		echo 'No terminal to ask what to delete: use --yes to run the selected tasks, or --dry-run.' >&2
+		exit 1
+	fi
+fi
+
+# --- Run ---
+
+selected=0
+for i in ${visible}; do
+	[ "$(get "task_sel_${i}")" = 1 ] && selected=$((selected + 1))
+done
+
+if [ "${selected}" -eq 0 ]; then
+	echo 'Nothing selected.'
 	exit 0
 fi
 
-if [ "${yes}" -eq 0 ]; then
-	if [ ! -t 0 ]; then
-		echo 'No terminal to ask for confirmation: use --yes to delete, or --dry-run.' >&2
-		exit 1
-	fi
-	printf 'Delete these directories? [y/N] '
-	read -r answer
-	case "${answer}" in
-		y|Y|yes|YES) ;;
-		*) echo 'Aborted.'; exit 1 ;;
-	esac
-fi
+count_done=0
+count_failed=0
+total_freed=0
 
-failed=0
-while IFS= read -r d; do
-	if rm -rf -- "${d}"; then
-		echo "Deleted $(tilde "${d}")"
-	else
-		echo "Failed to delete $(tilde "${d}")" >&2
-		failed=1
-	fi
-done <<EOF
-${found}
+echo
+for i in ${visible}; do
+	[ "$(get "task_sel_${i}")" = 1 ] || continue
+	echo "🧹 $(describe "${i}")"
+	task_freed=0
+	task_failed=0
+	items=$(get "task_items_${i}")
+	while IFS= read -r d; do
+		[ -n "${d}" ] || continue
+		if [ "${dry_run}" -eq 1 ]; then
+			echo "   $(tilde "${d}")"
+			continue
+		fi
+		before=$(dir_bytes "${d}")
+		case "$(get "task_action_${i}")" in
+			gc)
+				if git --git-dir="${d}" gc --quiet >/dev/null 2>&1; then
+					freed=$(( before - $(dir_bytes "${d}") ))
+					[ "${freed}" -ge 0 ] || freed=0
+				else
+					echo "   Failed: git gc in $(tilde "${d}")" >&2
+					task_failed=$((task_failed + 1))
+					continue
+				fi
+				;;
+			*)
+				if rm -rf -- "${d}"; then
+					freed=${before}
+				else
+					echo "   Failed to delete $(tilde "${d}")" >&2
+					task_failed=$((task_failed + 1))
+					continue
+				fi
+				;;
+		esac
+		task_freed=$((task_freed + freed))
+		[ "${verbose}" -eq 0 ] || echo "   $(tilde "${d}") ($(human_size "${freed}"))"
+	done <<EOF
+${items}
 EOF
+	if [ "${dry_run}" -eq 0 ]; then
+		echo "   Done, $(human_size "${task_freed}") freed."
+		total_freed=$((total_freed + task_freed))
+		if [ "${task_failed}" -eq 0 ]; then
+			count_done=$((count_done + 1))
+		else
+			count_failed=$((count_failed + 1))
+		fi
+	fi
+done
 
-if [ "${failed}" -eq 0 ]; then
-	echo "Freed $(human_size "${total}")"
+echo
+if [ "${dry_run}" -eq 1 ]; then
+	echo "👏 Dry run done: ${selected} task(s) would run, nothing was changed."
+else
+	echo "👏 Done! ${count_done} task(s) run, ${count_failed} failed, $(human_size "${total_freed}") freed."
 fi
-exit "${failed}"
+[ "${count_failed}" -eq 0 ]
