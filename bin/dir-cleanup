@@ -1,0 +1,143 @@
+#!/bin/sh
+# Delete dependency and cache directories (.venv, node_modules, __pycache__...)
+# found in the subdirectories of a directory.
+# Supports Linux and macOS.
+#
+# Usage: dir-cleanup [-y|--yes] [-n|--dry-run] [-h|--help] [DIR]
+#
+# Searches DIR (default: current directory) recursively for directories named
+# like the ones in CLEANUP_DIRS below, lists them with their size, then asks
+# for confirmation before deleting them.
+# - A matching directory is deleted as a whole: what is inside it is not searched.
+# - DIR itself, .git directories (and what is inside) and symbolic links are never touched.
+# - Names like "cache" or "venv" can also be real source directories: check the list.
+#
+# Options:
+# - -y, --yes: delete without asking for confirmation.
+# - -n, --dry-run: only list what would be deleted.
+# - -h, --help: show usage.
+set -eu
+
+# Directory names to delete (space-separated, exact names).
+CLEANUP_DIRS='.venv venv node_modules __pycache__ .cache cache'
+
+yes=0
+dry_run=0
+
+usage() {
+	echo "Usage: ${0##*/} [-y|--yes] [-n|--dry-run] [-h|--help] [DIR]"
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-y|--yes) yes=1; shift ;;
+		-n|--dry-run) dry_run=1; shift ;;
+		-h|--help) usage; exit 0 ;;
+		--) shift; break ;;
+		-*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+		*) break ;;
+	esac
+done
+
+dir=${1:-.}
+# Drop trailing slashes (but keep "/" itself).
+while [ "${dir}" != '/' ] && [ "${dir%/}" != "${dir}" ]; do
+	dir=${dir%/}
+done
+[ -d "${dir}" ] || { echo "Not a directory: ${dir}" >&2; exit 1; }
+
+# Show the home directory as ~ in a path.
+tilde() {
+	if [ -z "${HOME:-}" ]; then
+		echo "$1"
+		return
+	fi
+	case "$1" in
+		"${HOME}") echo '~' ;;
+		"${HOME}"/*) echo "~${1#"${HOME}"}" ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# Turn a size in bytes into a human readable size.
+human_size() {
+	echo "$1" | awk '{
+		s = $1
+		split("B K M G T P", u, " "); i = 1
+		while (s >= 1024 && i < 6) { s /= 1024; i++ }
+		if (i == 1) printf "%d%s\n", s, u[i]
+		else printf "%.1f%s\n", s, u[i]
+	}'
+}
+
+# Print the find expression matching the directory names: ( -name a -o -name b ... )
+names_expr() {
+	printf '('
+	sep=''
+	for name in ${CLEANUP_DIRS}; do
+		printf ' %s-name %s' "${sep}" "${name}"
+		sep='-o '
+	done
+	printf ' )\n'
+}
+# Unquoted on purpose: split into find arguments (no name contains a space or glob).
+expr=$(names_expr)
+
+# Matching directories: never go into .git, and stop at the first match.
+# shellcheck disable=SC2086
+found=$(find "${dir}" -mindepth 1 -type d \( -name .git -prune -o ${expr} -print -prune \) 2>/dev/null |
+	sort)
+
+if [ -z "${found}" ]; then
+	echo "Nothing to clean in $(tilde "${dir}")"
+	exit 0
+fi
+
+echo "== Directories found in $(tilde "${dir}") =="
+total=0
+while IFS= read -r d; do
+	kb=$(du -sk "${d}" 2>/dev/null | awk '{ print $1 }')
+	bytes=$(( ${kb:-0} * 1024 ))
+	total=$(( total + bytes ))
+	printf '%8s  %s\n' "$(human_size "${bytes}")" "$(tilde "${d}")"
+done <<EOF
+${found}
+EOF
+count=$(echo "${found}" | wc -l | tr -d ' ')
+echo
+echo "Total: $(human_size "${total}") in ${count} directories"
+
+if [ "${dry_run}" -eq 1 ]; then
+	echo '(dry run, nothing deleted)'
+	exit 0
+fi
+
+if [ "${yes}" -eq 0 ]; then
+	if [ ! -t 0 ]; then
+		echo 'No terminal to ask for confirmation: use --yes to delete, or --dry-run.' >&2
+		exit 1
+	fi
+	printf 'Delete these directories? [y/N] '
+	read -r answer
+	case "${answer}" in
+		y|Y|yes|YES) ;;
+		*) echo 'Aborted.'; exit 1 ;;
+	esac
+fi
+
+failed=0
+while IFS= read -r d; do
+	if rm -rf -- "${d}"; then
+		echo "Deleted $(tilde "${d}")"
+	else
+		echo "Failed to delete $(tilde "${d}")" >&2
+		failed=1
+	fi
+done <<EOF
+${found}
+EOF
+
+if [ "${failed}" -eq 0 ]; then
+	echo "Freed $(human_size "${total}")"
+fi
+exit "${failed}"
