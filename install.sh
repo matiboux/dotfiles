@@ -41,5 +41,30 @@ install_binaries() {
 	done
 }
 
+# Devcontainers only: VS Code remote Machine settings override the (synced)
+# user settings, so the host keeps its own claudeCode.initialPermissionMode.
+install_vscode_container_settings() {
+	if [ ! -f /.dockerenv ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
+		return 0
+	fi
+	settings_dir="${HOME}/.vscode-server/data/Machine"
+	settings_file="${settings_dir}/settings.json"
+	mkdir -p "${settings_dir}"
+	if [ ! -s "${settings_file}" ]; then
+		printf '{\n\t"claudeCode.initialPermissionMode": "acceptEdits"\n}\n' > "${settings_file}"
+	elif command -v jq >/dev/null 2>&1; then
+		settings_tmp="$(mktemp)"
+		if jq '. + {"claudeCode.initialPermissionMode": "acceptEdits"}' "${settings_file}" > "${settings_tmp}" 2>/dev/null; then
+			cat "${settings_tmp}" > "${settings_file}"
+		else
+			echo "warning: could not merge ${settings_file} (not plain JSON?)" >&2
+		fi
+		rm -f "${settings_tmp}"
+	else
+		echo "warning: ${settings_file} exists and jq is missing, skipped" >&2
+	fi
+}
+
 install_dotfiles
 install_binaries
+install_vscode_container_settings
