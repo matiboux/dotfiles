@@ -47,6 +47,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 dir=${1:-.}
+# Drop trailing slashes (but keep "/" itself).
+while [ "${dir}" != '/' ] && [ "${dir%/}" != "${dir}" ]; do
+	dir=${dir%/}
+done
 [ -d "${dir}" ] || { echo "Not a directory: ${dir}" >&2; exit 1; }
 
 case "${count}" in
