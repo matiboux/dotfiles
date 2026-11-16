@@ -32,22 +32,22 @@ usage() {
 	echo "Usage: ${0##*/} [-n|--count COUNT] [-m|--min-size SIZE_MB] [-a|--all] [-h|--help] [DIR]"
 }
 
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		-n|--count) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; count=$2; shift 2 ;;
-		-m|--min-size) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; min_mb=$2; shift 2 ;;
+while [ "${#}" -gt 0 ]; do
+	case "${1}" in
+		-n|--count) [ "${#}" -ge 2 ] || { usage >&2; exit 2; }; count=${2}; shift 2 ;;
+		-m|--min-size) [ "${#}" -ge 2 ] || { usage >&2; exit 2; }; min_mb=${2}; shift 2 ;;
 		-a|--all) all=1; shift ;;
 		-h|--help) usage; exit 0 ;;
 		--) shift; break ;;
-		-*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+		-*) echo "Unknown option: ${1}" >&2; usage >&2; exit 2 ;;
 		*) break ;;
 	esac
 done
 
 dir=${1:-.}
-[ -d "$dir" ] || { echo "Not a directory: $dir" >&2; exit 1; }
+[ -d "${dir}" ] || { echo "Not a directory: ${dir}" >&2; exit 1; }
 
-case "$count$min_mb" in
+case "${count}${min_mb}" in
 	''|*[!0-9]*) echo "COUNT and SIZE_MB must be positive integers" >&2; exit 2 ;;
 esac
 
@@ -56,8 +56,8 @@ esac
 excluded_expr() {
 	printf '('
 	sep=''
-	for name in $EXCLUDED_DIRS; do
-		printf ' %s-name %s' "$sep" "$name"
+	for name in ${EXCLUDED_DIRS}; do
+		printf ' %s-name %s' "${sep}" "${name}"
 		sep='-o '
 	done
 	printf ' )\n'
@@ -70,20 +70,20 @@ excl=$(excluded_expr)
 # arguments, unlike an empty xargs.
 if stat -c '%s' / >/dev/null 2>&1; then
 	big_files() {
-		if [ "$all" -eq 1 ]; then
-			find "$dir" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+		if [ "${all}" -eq 1 ]; then
+			find "${dir}" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
 		else
 			# shellcheck disable=SC2086
-			find "$dir" -type d $excl -prune -o -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+			find "${dir}" -type d ${excl} -prune -o -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
 		fi
 	}
 else
 	big_files() {
-		if [ "$all" -eq 1 ]; then
-			find "$dir" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+		if [ "${all}" -eq 1 ]; then
+			find "${dir}" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
 		else
 			# shellcheck disable=SC2086
-			find "$dir" -type d $excl -prune -o -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+			find "${dir}" -type d ${excl} -prune -o -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
 		fi
 	}
 fi
@@ -104,57 +104,57 @@ humanize() {
 # Same ~ replacement for a single path.
 tilde() {
 	if [ -z "${HOME:-}" ]; then
-		echo "$1"
+		echo "${1}"
 		return
 	fi
-	case "$1" in
-		"$HOME") echo '~' ;;
-		"$HOME"/*) echo "~${1#"$HOME"}" ;;
-		*) echo "$1" ;;
+	case "${1}" in
+		"${HOME}") echo '~' ;;
+		"${HOME}"/*) echo "~${1#"${HOME}"}" ;;
+		*) echo "${1}" ;;
 	esac
 }
 
-echo "== Depth 1 sizes: $(tilde "$dir") =="
+echo "== Depth 1 sizes: $(tilde "${dir}") =="
 # "<bytes> <path>" lines, DIR itself included.
-du_out=$(du -k -d 1 "$dir" 2>/dev/null | awk '{
+du_out=$(du -k -d 1 "${dir}" 2>/dev/null | awk '{
 	s = $1 * 1024; p = $0; sub(/^[0-9]+[ \t]+/, "", p)
 	print s " " p
 }')
-total=$(echo "$du_out" | awk -v d="$dir" '{
+total=$(echo "${du_out}" | awk -v d="${dir}" '{
 	s = $1; sub(/^[0-9]+ /, "")
 	if ($0 == d) print s
 }')
-[ -n "$total" ] || total=$(echo "$du_out" | sort -nr | awk 'NR == 1 { print $1 }')
-echo "Total: $(echo "$total ." | humanize | awk '{ print $1 }')"
-entries=$(echo "$du_out" | awk -v d="$dir" '{
+[ -n "${total}" ] || total=$(echo "${du_out}" | sort -nr | awk 'NR == 1 { print $1 }')
+echo "Total: $(echo "${total} ." | humanize | awk '{ print $1 }')"
+entries=$(echo "${du_out}" | awk -v d="${dir}" '{
 	s = $1; p = $0; sub(/^[0-9]+ /, "", p)
 	if (p != d) print
 }' | sort -nr)
-if [ "$all" -eq 1 ]; then
-	shown=$entries
+if [ "${all}" -eq 1 ]; then
+	shown=${entries}
 else
-	shown=$(echo "$entries" | awk -v t="$total" '$1 * 1000 >= t')
+	shown=$(echo "${entries}" | awk -v t="${total}" '$1 * 1000 >= t')
 fi
-echo "$shown" | humanize
-hidden=$(( $(echo "$entries" | wc -l) - $(echo "$shown" | wc -l) ))
-if [ "$hidden" -gt 0 ]; then
-	echo "(+ $hidden entries under 0.1% hidden, use --all to show them)"
+echo "${shown}" | humanize
+hidden=$(( $(echo "${entries}" | wc -l) - $(echo "${shown}" | wc -l) ))
+if [ "${hidden}" -gt 0 ]; then
+	echo "(+ ${hidden} entries under 0.1% hidden, use --all to show them)"
 fi
 
-if [ "$all" -eq 0 ]; then
+if [ "${all}" -eq 0 ]; then
 	echo
-	echo "== Excluded from the file sections (use --all to include) =="
+	echo '== Excluded from the file sections (use --all to include) =='
 	# shellcheck disable=SC2086
-	excluded=$(find "$dir" -mindepth 1 -type d $excl -prune -print 2>/dev/null |
+	excluded=$(find "${dir}" -mindepth 1 -type d ${excl} -prune -print 2>/dev/null |
 		while IFS= read -r d; do
-			du -sk "$d" 2>/dev/null | awk -v name="${d##*/}" '{ print $1 * 1024 " " name }'
+			du -sk "${d}" 2>/dev/null | awk -v name="${d##*/}" '{ print $1 * 1024 " " name }'
 		done |
 		awk '{ c[$2]++; t[$2] += $1 } END { for (n in c) print t[n] " " c[n] " " n }' |
 		sort -nr)
-	if [ -z "$excluded" ]; then
-		echo "None"
+	if [ -z "${excluded}" ]; then
+		echo 'None'
 	else
-		echo "$excluded" | awk '{
+		echo "${excluded}" | awk '{
 			s = $1; n = $2; e = $3
 			split("B K M G T P", u, " "); i = 1
 			while (s >= 1024 && i < 6) { s /= 1024; i++ }
@@ -164,17 +164,17 @@ if [ "$all" -eq 0 ]; then
 fi
 
 echo
-echo "== Heaviest files (> ${min_mb}MB): top $count =="
+echo "== Heaviest files (> ${min_mb}MB): top ${count} =="
 big=$(big_files | sort -nr || true)
-if [ -z "$big" ]; then
-	echo "None"
+if [ -z "${big}" ]; then
+	echo 'None'
 	exit 0
 fi
-echo "$big" | head -n "$count" | humanize
+echo "${big}" | head -n "${count}" | humanize
 
 echo
 echo "== Summary by extension (> ${min_mb}MB) =="
-ext_out=$(echo "$big" | awk -v all="$all" '{
+ext_out=$(echo "${big}" | awk -v all="${all}" '{
 	s = $1; sub(/^[0-9]+ /, "")
 	path = $0
 	n = split(path, parts, "/"); f = parts[n]
@@ -191,13 +191,13 @@ END {
 	}
 	if (oc > 0) print "other " ot " " oc
 }')
-echo "$ext_out" | grep -v '^other ' | sort -nr | awk '{
+echo "${ext_out}" | grep -v '^other ' | sort -nr | awk '{
 	s = $1; n = $2; e = $3 ($4 != "" ? " " $4 : "")
 	split("B K M G T P", u, " "); i = 1
 	while (s >= 1024 && i < 6) { s /= 1024; i++ }
 	printf "%6.1f%s  %4d file%s  %s\n", s, u[i], n, (n > 1 ? "s" : " "), e
 }'
-echo "$ext_out" | grep '^other ' | awk '{
+echo "${ext_out}" | grep '^other ' | awk '{
 	s = $2; n = $3
 	split("B K M G T P", u, " "); i = 1
 	while (s >= 1024 && i < 6) { s /= 1024; i++ }
