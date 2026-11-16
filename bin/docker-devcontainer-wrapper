@@ -2,38 +2,68 @@
 set -euo pipefail
 
 REAL_DOCKER="$(which docker)"
+
+# Shared state, filled by the tool sections below:
+#   VOLUMES: "host:container" bind mounts
+#   ENVS:    "NAME=value" environment variables
+VOLUMES=()
+ENVS=()
+
+# ---------- Claude Code (vscode extension) ----------
 CLAUDE_HOST_DIR="$HOME/.claude"        # your already-logged-in config
 CLAUDE_CONTAINER_DIR="/opt/claude-shared"
-CODEX_HOST_DIR="${CODEX_HOME:-$HOME/.codex}"  # OpenAI Codex config (auth.json, ...)
+
+setup_claude() {
+  VOLUMES+=("${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}")
+  ENVS+=("CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}")
+}
+
+# ---------- OpenAI Codex (vscode extension) ----------
+CODEX_HOST_DIR="${CODEX_HOME:-$HOME/.codex}"  # auth.json, config...
 CODEX_CONTAINER_DIR="/opt/codex-shared"
 
-args=("$@")
+setup_codex() {
+  # Skip if absent, otherwise docker would create an empty root-owned dir
+  [[ -d "$CODEX_HOST_DIR" ]] || return 0
+  VOLUMES+=("${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}")
+  ENVS+=("CODEX_HOME=${CODEX_CONTAINER_DIR}")
+}
 
-# ---------- plain `docker run` / `docker create` ----------
-if [[ "${args[0]:-}" == "run" || "${args[0]:-}" == "create" ]]; then
-  sub="${args[0]}"
-  rest=("${args[@]:1}")
-  codex_args=()
-  if [[ -d "$CODEX_HOST_DIR" ]]; then
-    codex_args=(-v "${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}" -e "CODEX_HOME=${CODEX_CONTAINER_DIR}")
-  fi
-  exec "$REAL_DOCKER" "$sub" \
-    -v "${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}" \
-    -e "CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}" \
-    ${codex_args[@]+"${codex_args[@]}"} \
-    "${rest[@]}"
-fi
+# ---------- Credential propagation: collect everything to inject ----------
+setup_claude
+setup_codex
+
+# ---------- `docker run` / `docker create` ----------
+handle_run() {
+  local sub="$1"; shift
+  local inject=()
+  local v e
+  for v in "${VOLUMES[@]}"; do inject+=(-v "$v"); done
+  for e in "${ENVS[@]}"; do inject+=(-e "$e"); done
+  exec "$REAL_DOCKER" "$sub" "${inject[@]}" "$@"
+}
 
 # ---------- `docker compose ...` ----------
-if [[ "${args[0]:-}" == "compose" ]]; then
-  compose_args=("${args[@]:1}")
 
-  files=()
-  passthrough=()
-  subcommand=""
-  subcommand_pos=-1
-  i=0
-  n=${#compose_args[@]}
+# Print a compose override file injecting volumes/envs into every service
+# Args: list of service names
+generate_compose_override() {
+  local svc v e
+  echo "services:"
+  for svc in "$@"; do
+    echo "  ${svc}:"
+    echo "    volumes:"
+    for v in "${VOLUMES[@]}"; do echo "      - ${v}"; done
+    echo "    environment:"
+    for e in "${ENVS[@]}"; do echo "      ${e%%=*}: ${e#*=}"; done
+  done
+}
+
+handle_compose() {
+  local compose_args=("$@")
+  local files=() passthrough=()
+  local subcommand="" subcommand_pos=-1
+  local i=0 n=${#compose_args[@]} a
 
   while (( i < n )); do
     a="${compose_args[$i]}"
@@ -58,34 +88,23 @@ if [[ "${args[0]:-}" == "compose" ]]; then
     esac
   done
 
-  override_file=""
+  local override_file=""
   if [[ -n "$subcommand" && ${#files[@]} -gt 0 ]]; then
-    f_flags=()
+    local f_flags=() f
     for f in "${files[@]}"; do f_flags+=(-f "$f"); done
 
     # Ask real docker/compose which services this project actually has
-    services="$("$REAL_DOCKER" compose "${f_flags[@]}" config --services 2>/dev/null || true)"
+    local services_raw services=()
+    services_raw="$("$REAL_DOCKER" compose "${f_flags[@]}" config --services 2>/dev/null || true)"
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && services+=("$f")
+    done <<< "$services_raw"
 
-    if [[ -n "$services" ]]; then
-      override_file="${TMPDIR:-/tmp}/claude-devcontainer-override-$$-${RANDOM}.yml"
-      : > "$override_file"
-      {
-        echo "services:"
-        while IFS= read -r svc; do
-          [[ -z "$svc" ]] && continue
-          cat <<SVC
-  ${svc}:
-    volumes:
-      - ${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}
-$([[ -d "$CODEX_HOST_DIR" ]] && echo "      - ${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}")
-    environment:
-      CLAUDE_CONFIG_DIR: ${CLAUDE_CONTAINER_DIR}
-$([[ -d "$CODEX_HOST_DIR" ]] && echo "      CODEX_HOME: ${CODEX_CONTAINER_DIR}")
-SVC
-        done <<< "$services"
-      } > "$override_file"
+    if (( ${#services[@]} > 0 )); then
+      override_file="${TMPDIR:-/tmp}/devcontainer-override-$$-${RANDOM}.yml"
+      generate_compose_override "${services[@]}" > "$override_file"
 
-      new_passthrough=()
+      local new_passthrough=() idx
       for idx in "${!passthrough[@]}"; do
         if [[ "$idx" -eq "$subcommand_pos" ]]; then
           new_passthrough+=(-f "$override_file")
@@ -96,11 +115,15 @@ SVC
     fi
   fi
 
-  "$REAL_DOCKER" compose "${passthrough[@]}"
-  status=$?
+  local status=0
+  "$REAL_DOCKER" compose "${passthrough[@]}" || status=$?
   [[ -n "$override_file" ]] && rm -f "$override_file"
-  exit $status
-fi
+  exit "$status"
+}
 
-# ---------- everything else (ps, logs, build, down, exec...) ----------
-exec "$REAL_DOCKER" "${args[@]}"
+# ---------- Dispatch ----------
+case "${1:-}" in
+  run|create) handle_run "$@" ;;
+  compose)    shift; handle_compose "$@" ;;
+  *)          exec "$REAL_DOCKER" "$@" ;;  # ps, logs, build, down, exec...
+esac
