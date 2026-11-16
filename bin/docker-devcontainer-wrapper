@@ -4,6 +4,8 @@ set -euo pipefail
 REAL_DOCKER="$(which docker)"
 CLAUDE_HOST_DIR="$HOME/.claude"        # your already-logged-in config
 CLAUDE_CONTAINER_DIR="/opt/claude-shared"
+CODEX_HOST_DIR="${CODEX_HOME:-$HOME/.codex}"  # OpenAI Codex config (auth.json, ...)
+CODEX_CONTAINER_DIR="/opt/codex-shared"
 
 args=("$@")
 
@@ -11,9 +13,14 @@ args=("$@")
 if [[ "${args[0]:-}" == "run" || "${args[0]:-}" == "create" ]]; then
   sub="${args[0]}"
   rest=("${args[@]:1}")
+  codex_args=()
+  if [[ -d "$CODEX_HOST_DIR" ]]; then
+    codex_args=(-v "${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}" -e "CODEX_HOME=${CODEX_CONTAINER_DIR}")
+  fi
   exec "$REAL_DOCKER" "$sub" \
     -v "${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}" \
     -e "CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}" \
+    ${codex_args[@]+"${codex_args[@]}"} \
     "${rest[@]}"
 fi
 
@@ -70,8 +77,10 @@ if [[ "${args[0]:-}" == "compose" ]]; then
   ${svc}:
     volumes:
       - ${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}
+$([[ -d "$CODEX_HOST_DIR" ]] && echo "      - ${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}")
     environment:
       CLAUDE_CONFIG_DIR: ${CLAUDE_CONTAINER_DIR}
+$([[ -d "$CODEX_HOST_DIR" ]] && echo "      CODEX_HOME: ${CODEX_CONTAINER_DIR}")
 SVC
         done <<< "$services"
       } > "$override_file"
