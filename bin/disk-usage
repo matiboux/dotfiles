@@ -2,7 +2,7 @@
 # Show what takes space in a directory.
 # Supports Linux and macOS.
 #
-# Usage: disk-usage [-n COUNT] [-m SIZE_MB] [-a|--all] [-h|--help] [DIR]
+# Usage: disk-usage [-n COUNT] [-m SIZE] [-a|--all] [-h|--help] [DIR]
 #
 # Prints four sections for DIR (default: current directory):
 # - Depth 1: size of each entry, heaviest first, with the total on top.
@@ -16,7 +16,9 @@
 #
 # Options:
 # - -n, --count COUNT: number of heaviest files to list (default: 5).
-# - -m, --min-size SIZE_MB: size threshold in MB (default: 10).
+# - -m, --min-size SIZE: size threshold, as a number with an optional unit
+#   K, M, G or T (powers of 1024), e.g. 500K, 2G or 1.5G. Without a unit, the
+#   number is in MB (default: 10M).
 # - -a, --all: show every depth 1 entry and exclude no directory from the file sections.
 # - -h, --help: show usage.
 set -eu
@@ -25,17 +27,17 @@ set -eu
 EXCLUDED_DIRS='.git .venv venv node_modules __pycache__ .cache cache'
 
 count=5
-min_mb=10
+min_size=10M
 all=0
 
 usage() {
-	echo "Usage: ${0##*/} [-n|--count COUNT] [-m|--min-size SIZE_MB] [-a|--all] [-h|--help] [DIR]"
+	echo "Usage: ${0##*/} [-n|--count COUNT] [-m|--min-size SIZE] [-a|--all] [-h|--help] [DIR]"
 }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		-n|--count) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; count=$2; shift 2 ;;
-		-m|--min-size) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; min_mb=$2; shift 2 ;;
+		-m|--min-size) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; min_size=$2; shift 2 ;;
 		-a|--all) all=1; shift ;;
 		-h|--help) usage; exit 0 ;;
 		--) shift; break ;;
@@ -47,9 +49,21 @@ done
 dir=${1:-.}
 [ -d "${dir}" ] || { echo "Not a directory: ${dir}" >&2; exit 1; }
 
-case "${count}${min_mb}" in
-	''|*[!0-9]*) echo "COUNT and SIZE_MB must be positive integers" >&2; exit 2 ;;
+case "${count}" in
+	''|*[!0-9]*) echo 'COUNT must be a positive integer' >&2; exit 2 ;;
 esac
+
+# Convert the size threshold to bytes (min_bytes) and a display label (min_label).
+size_parsed=$(echo "${min_size}" | awk '{
+	s = toupper($0); sub(/B$/, "", s)
+	if (s !~ /^[0-9]+(\.[0-9]+)?[KMGT]?$/) exit 1
+	unit = (s ~ /[KMGT]$/) ? substr(s, length(s)) : "M"
+	num = (s ~ /[KMGT]$/) ? substr(s, 1, length(s) - 1) : s
+	mult = (unit == "K") ? 1024 : (unit == "M") ? 1048576 : (unit == "G") ? 1073741824 : 1099511627776
+	printf "%.0f %s%s\n", num * mult, num, unit
+}') || { echo 'SIZE must be a number with an optional unit K, M, G or T (e.g. 500K, 2G)' >&2; exit 2; }
+min_bytes=${size_parsed%% *}
+min_label=${size_parsed#* }
 
 # Print the find expression matching the excluded directory names:
 # ( -name a -o -name b ... )
@@ -71,19 +85,19 @@ excl=$(excluded_expr)
 if stat -c '%s' / >/dev/null 2>&1; then
 	big_files() {
 		if [ "${all}" -eq 1 ]; then
-			find "${dir}" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+			find "${dir}" -type f -size +"${min_bytes}"c -exec stat -c '%s %n' {} + 2>/dev/null
 		else
 			# shellcheck disable=SC2086
-			find "${dir}" -type d ${excl} -prune -o -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+			find "${dir}" -type d ${excl} -prune -o -type f -size +"${min_bytes}"c -exec stat -c '%s %n' {} + 2>/dev/null
 		fi
 	}
 else
 	big_files() {
 		if [ "${all}" -eq 1 ]; then
-			find "${dir}" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+			find "${dir}" -type f -size +"${min_bytes}"c -exec stat -f '%z %N' {} + 2>/dev/null
 		else
 			# shellcheck disable=SC2086
-			find "${dir}" -type d ${excl} -prune -o -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+			find "${dir}" -type d ${excl} -prune -o -type f -size +"${min_bytes}"c -exec stat -f '%z %N' {} + 2>/dev/null
 		fi
 	}
 fi
@@ -152,7 +166,7 @@ if [ "${all}" -eq 0 ]; then
 		awk '{ c[$2]++; t[$2] += $1 } END { for (n in c) print t[n] " " c[n] " " n }' |
 		sort -nr)
 	# Only list the names reaching the size threshold.
-	excluded_shown=$(echo "${excluded}" | awk -v min="${min_mb}" 'NF && $1 >= min * 1048576')
+	excluded_shown=$(echo "${excluded}" | awk -v min="${min_bytes}" 'NF && $1 >= min')
 	excluded_hidden=$(( $(echo "${excluded}" | awk 'NF' | wc -l) - $(echo "${excluded_shown}" | awk 'NF' | wc -l) ))
 	if [ -n "${excluded_shown}" ]; then
 		echo "${excluded_shown}" | awk '{
@@ -165,12 +179,12 @@ if [ "${all}" -eq 0 ]; then
 		echo 'None'
 	fi
 	if [ "${excluded_hidden}" -gt 0 ]; then
-		echo "(+ ${excluded_hidden} more under ${min_mb}MB hidden)"
+		echo "(+ ${excluded_hidden} more under ${min_label} hidden)"
 	fi
 fi
 
 echo
-echo "== Heaviest files (> ${min_mb}MB): top ${count} =="
+echo "== Heaviest files (> ${min_label}): top ${count} =="
 big=$(big_files | sort -nr || true)
 if [ -z "${big}" ]; then
 	echo 'None'
@@ -179,7 +193,7 @@ fi
 echo "${big}" | head -n "${count}" | humanize
 
 echo
-echo "== Summary by extension (> ${min_mb}MB) =="
+echo "== Summary by extension (> ${min_label}) =="
 ext_out=$(echo "${big}" | awk -v all="${all}" '{
 	s = $1; sub(/^[0-9]+ /, "")
 	path = $0
