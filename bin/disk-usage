@@ -40,11 +40,12 @@ case "$count$min_mb" in
 	''|*[!0-9]*) echo "COUNT and SIZE_MB must be positive integers" >&2; exit 2 ;;
 esac
 
-# Print "<bytes> <path>" for a file list read from stdin (NUL-separated).
+# Print "<bytes> <path>" for each file above the threshold.
+# (find -exec ... {} + never runs stat without arguments, unlike an empty xargs.)
 if stat -c '%s' / >/dev/null 2>&1; then
-	file_sizes() { xargs -0 stat -c '%s %n'; }
+	big_files() { find "$dir" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null; }
 else
-	file_sizes() { xargs -0 stat -f '%z %N'; }
+	big_files() { find "$dir" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null; }
 fi
 
 # Turn a leading byte count into a human readable size.
@@ -66,7 +67,7 @@ du -k -d 1 "$dir" 2>/dev/null | sort -nr | awk '{
 
 echo
 echo "== Heaviest files (> ${min_mb}MB): top $count =="
-big=$(find "$dir" -type f -size +"${min_mb}"M -print0 2>/dev/null | file_sizes | sort -nr)
+big=$(big_files | sort -nr || true)
 if [ -z "$big" ]; then
 	echo "None"
 	exit 0
