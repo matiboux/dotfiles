@@ -1,21 +1,27 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-REAL_DOCKER="$(which docker)"
+REAL_DOCKER="$(command -v docker)"
 
-# Shared state, filled by the tool sections below:
+NL='
+'
+
+# Shared state, filled by the tool sections below (newline-separated lists):
 #   VOLUMES: "host:container" bind mounts
 #   ENVS:    "NAME=value" environment variables
-VOLUMES=()
-ENVS=()
+VOLUMES=""
+ENVS=""
+
+add_volume() { VOLUMES="${VOLUMES}${1}${NL}"; }
+add_env() { ENVS="${ENVS}${1}${NL}"; }
 
 # ---------- Claude Code (vscode extension) ----------
 CLAUDE_HOST_DIR="$HOME/.claude"        # your already-logged-in config
 CLAUDE_CONTAINER_DIR="/opt/claude-shared"
 
 setup_claude() {
-  VOLUMES+=("${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}")
-  ENVS+=("CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}")
+  add_volume "${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}"
+  add_env "CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}"
 }
 
 # ---------- OpenAI Codex (vscode extension) ----------
@@ -24,9 +30,9 @@ CODEX_CONTAINER_DIR="/opt/codex-shared"
 
 setup_codex() {
   # Skip if absent, otherwise docker would create an empty root-owned dir
-  [[ -d "$CODEX_HOST_DIR" ]] || return 0
-  VOLUMES+=("${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}")
-  ENVS+=("CODEX_HOME=${CODEX_CONTAINER_DIR}")
+  [ -d "$CODEX_HOST_DIR" ] || return 0
+  add_volume "${CODEX_HOST_DIR}:${CODEX_CONTAINER_DIR}"
+  add_env "CODEX_HOME=${CODEX_CONTAINER_DIR}"
 }
 
 # ---------- Credential propagation: collect everything to inject ----------
@@ -35,89 +41,103 @@ setup_codex
 
 # ---------- `docker run` / `docker create` ----------
 handle_run() {
-  local sub="$1"; shift
-  local inject=()
-  local v e
-  for v in "${VOLUMES[@]}"; do inject+=(-v "$v"); done
-  for e in "${ENVS[@]}"; do inject+=(-e "$e"); done
-  exec "$REAL_DOCKER" "$sub" "${inject[@]}" "$@"
+  run_sub="$1"; shift
+  while IFS= read -r run_v; do
+    if [ -n "$run_v" ]; then set -- -v "$run_v" "$@"; fi
+  done <<EOF
+$VOLUMES
+EOF
+  while IFS= read -r run_e; do
+    if [ -n "$run_e" ]; then set -- -e "$run_e" "$@"; fi
+  done <<EOF
+$ENVS
+EOF
+  exec "$REAL_DOCKER" "$run_sub" "$@"
 }
 
 # ---------- `docker compose ...` ----------
 
+# Print compose services of the given -f files (newline-separated list in $1)
+list_services() {
+  ls_files="$1"
+  set --
+  while IFS= read -r ls_f; do
+    if [ -n "$ls_f" ]; then set -- "$@" -f "$ls_f"; fi
+  done <<EOF
+$ls_files
+EOF
+  "$REAL_DOCKER" compose "$@" config --services 2>/dev/null || true
+}
+
 # Print a compose override file injecting volumes/envs into every service
-# Args: list of service names
+# Args: newline-separated list of service names in $1
 generate_compose_override() {
-  local svc v e
   echo "services:"
-  for svc in "$@"; do
-    echo "  ${svc}:"
+  while IFS= read -r go_svc; do
+    [ -n "$go_svc" ] || continue
+    echo "  ${go_svc}:"
     echo "    volumes:"
-    for v in "${VOLUMES[@]}"; do echo "      - ${v}"; done
+    while IFS= read -r go_v; do
+      if [ -n "$go_v" ]; then echo "      - ${go_v}"; fi
+    done <<EOF
+$VOLUMES
+EOF
     echo "    environment:"
-    for e in "${ENVS[@]}"; do echo "      ${e%%=*}: ${e#*=}"; done
-  done
+    while IFS= read -r go_e; do
+      if [ -n "$go_e" ]; then echo "      ${go_e%%=*}: ${go_e#*=}"; fi
+    done <<EOF
+$ENVS
+EOF
+  done <<EOF
+$1
+EOF
 }
 
 handle_compose() {
-  local compose_args=("$@")
-  local files=() passthrough=()
-  local subcommand="" subcommand_pos=-1
-  local i=0 n=${#compose_args[@]} a
+  files=""
+  subcommand_pos=-1
+  pos=0
+  expect_file=0
 
-  while (( i < n )); do
-    a="${compose_args[$i]}"
-    case "$a" in
-      -f|--file)
-        files+=("${compose_args[$((i+1))]}")
-        passthrough+=("$a" "${compose_args[$((i+1))]}")
-        i=$((i+2))
-        ;;
-      up|run|create|start)
-        if [[ -z "$subcommand" ]]; then
-          subcommand="$a"
-          subcommand_pos=${#passthrough[@]}
-        fi
-        passthrough+=("$a")
-        i=$((i+1))
-        ;;
-      *)
-        passthrough+=("$a")
-        i=$((i+1))
-        ;;
-    esac
+  # Find -f files and the position of the first up/run/create/start
+  for a in "$@"; do
+    if [ "$expect_file" -eq 1 ]; then
+      files="${files}${a}${NL}"
+      expect_file=0
+    else
+      case "$a" in
+        -f|--file) expect_file=1 ;;
+        up|run|create|start)
+          [ "$subcommand_pos" -eq -1 ] && subcommand_pos=$pos ;;
+      esac
+    fi
+    pos=$((pos+1))
   done
 
-  local override_file=""
-  if [[ -n "$subcommand" && ${#files[@]} -gt 0 ]]; then
-    local f_flags=() f
-    for f in "${files[@]}"; do f_flags+=(-f "$f"); done
-
+  override_file=""
+  if [ "$subcommand_pos" -ge 0 ] && [ -n "$files" ]; then
     # Ask real docker/compose which services this project actually has
-    local services_raw services=()
-    services_raw="$("$REAL_DOCKER" compose "${f_flags[@]}" config --services 2>/dev/null || true)"
-    while IFS= read -r f; do
-      [[ -n "$f" ]] && services+=("$f")
-    done <<< "$services_raw"
+    services="$(list_services "$files")"
 
-    if (( ${#services[@]} > 0 )); then
-      override_file="${TMPDIR:-/tmp}/devcontainer-override-$$-${RANDOM}.yml"
-      generate_compose_override "${services[@]}" > "$override_file"
+    if [ -n "$services" ]; then
+      override_file="$(mktemp "${TMPDIR:-/tmp}/devcontainer-override-XXXXXX")"
+      generate_compose_override "$services" > "$override_file"
 
-      local new_passthrough=() idx
-      for idx in "${!passthrough[@]}"; do
-        if [[ "$idx" -eq "$subcommand_pos" ]]; then
-          new_passthrough+=(-f "$override_file")
-        fi
-        new_passthrough+=("${passthrough[$idx]}")
+      # Rebuild "$@", inserting -f <override> right before the subcommand
+      i=0
+      n=$#
+      while [ "$i" -lt "$n" ]; do
+        [ "$i" -eq "$subcommand_pos" ] && set -- "$@" -f "$override_file"
+        set -- "$@" "$1"
+        shift
+        i=$((i+1))
       done
-      passthrough=("${new_passthrough[@]}")
     fi
   fi
 
-  local status=0
-  "$REAL_DOCKER" compose "${passthrough[@]}" || status=$?
-  [[ -n "$override_file" ]] && rm -f "$override_file"
+  status=0
+  "$REAL_DOCKER" compose "$@" || status=$?
+  [ -n "$override_file" ] && rm -f "$override_file"
   exit "$status"
 }
 
