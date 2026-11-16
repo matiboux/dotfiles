@@ -82,11 +82,23 @@ main() {
 	fi
 
 	# Pull latest changes from the main branch
-	git -C "${DOTFILES_DIR}" pull -q --ff-only || {
+	# Git output is captured and only shown on failure, then summarized in one line.
+	old_head="$(git -C "${DOTFILES_DIR}" rev-parse HEAD)"
+	pull_output="$(git -C "${DOTFILES_DIR}" pull --ff-only 2>&1)" || {
+		printf '%s\n' "${pull_output}" >&2
 		echo "❌ Failed to pull latest changes." >&2
 		return 1
 	}
-	echo '✅ Pulled latest changes.'
+	new_head="$(git -C "${DOTFILES_DIR}" rev-parse HEAD)"
+
+	if [ "${old_head}" = "${new_head}" ]; then
+		echo "✅ Branch ${current_branch} already up to date."
+	else
+		commit_count="$(git -C "${DOTFILES_DIR}" rev-list --count "${old_head}..${new_head}")"
+		# e.g. "14 files changed, 1518 insertions(+), 105 deletions(-)"
+		diff_summary="$(git -C "${DOTFILES_DIR}" diff --shortstat "${old_head}" "${new_head}" | sed 's/^ *//')"
+		echo "✅ Updated branch ${current_branch}: pulled ${commit_count} commit(s) ($(git -C "${DOTFILES_DIR}" rev-parse --short "${old_head}")..$(git -C "${DOTFILES_DIR}" rev-parse --short "${new_head}")), ${diff_summary}."
+	fi
 
 	# Update submodules if any
 	git -C "${DOTFILES_DIR}" submodule update -q --init --recursive || {
