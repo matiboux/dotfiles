@@ -5,19 +5,24 @@
 # Usage: disk-usage [-n COUNT] [-m SIZE_MB] [-a|--all] [-h|--help] [DIR]
 #
 # Prints four sections for DIR (default: current directory):
-# - Depth 1: size of each entry, heaviest first.
-# - Excluded directories: total size of the dependency/VCS directories skipped
-#   in the file sections (.git, .venv, venv, node_modules, __pycache__),
-#   grouped by name.
+# - Depth 1: size of each entry, heaviest first, with the total on top.
+#   Entries under 0.1% of the total are hidden.
+# - Excluded directories: total size of the dependency/cache directories
+#   skipped in the file sections (see EXCLUDED_DIRS below), grouped by name.
 # - Heaviest files: the COUNT heaviest files (searched recursively) above the size threshold.
 # - Summary: number and total size of files above the threshold, by extension.
+#   Extensions with a single file are merged in one "other" line, since those
+#   files are already listed above when they are heavy enough.
 #
 # Options:
 # - -n, --count COUNT: number of heaviest files to list (default: 5).
 # - -m, --min-size SIZE_MB: size threshold in MB (default: 10).
-# - -a, --all: do not exclude any directory from the file sections.
+# - -a, --all: show every depth 1 entry and exclude no directory from the file sections.
 # - -h, --help: show usage.
 set -eu
+
+# Directory names excluded from the file sections (space-separated, exact names).
+EXCLUDED_DIRS='.git .venv venv node_modules __pycache__ .cache cache'
 
 count=5
 min_mb=10
@@ -46,6 +51,20 @@ case "$count$min_mb" in
 	''|*[!0-9]*) echo "COUNT and SIZE_MB must be positive integers" >&2; exit 2 ;;
 esac
 
+# Print the find expression matching the excluded directory names:
+# ( -name a -o -name b ... )
+excluded_expr() {
+	printf '('
+	sep=''
+	for name in $EXCLUDED_DIRS; do
+		printf ' %s-name %s' "$sep" "$name"
+		sep='-o '
+	done
+	printf ' )\n'
+}
+# Unquoted on purpose: split into find arguments (no name contains a space or glob).
+excl=$(excluded_expr)
+
 # Print "<bytes> <path>" for each file above the threshold, skipping excluded
 # directories unless --all. find -exec ... {} + never runs stat without
 # arguments, unlike an empty xargs.
@@ -54,8 +73,8 @@ if stat -c '%s' / >/dev/null 2>&1; then
 		if [ "$all" -eq 1 ]; then
 			find "$dir" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
 		else
-			find "$dir" -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name __pycache__ \) -prune -o \
-				-type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+			# shellcheck disable=SC2086
+			find "$dir" -type d $excl -prune -o -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
 		fi
 	}
 else
@@ -63,8 +82,8 @@ else
 		if [ "$all" -eq 1 ]; then
 			find "$dir" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
 		else
-			find "$dir" -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name __pycache__ \) -prune -o \
-				-type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+			# shellcheck disable=SC2086
+			find "$dir" -type d $excl -prune -o -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
 		fi
 	}
 fi
@@ -81,15 +100,38 @@ humanize() {
 }
 
 echo "== Depth 1 sizes: $dir =="
-du -k -d 1 "$dir" 2>/dev/null | sort -nr | awk '{
+# "<bytes> <path>" lines, DIR itself included.
+du_out=$(du -k -d 1 "$dir" 2>/dev/null | awk '{
 	s = $1 * 1024; p = $0; sub(/^[0-9]+[ \t]+/, "", p)
 	print s " " p
-}' | humanize
+}')
+total=$(echo "$du_out" | awk -v d="$dir" '{
+	s = $1; sub(/^[0-9]+ /, "")
+	if ($0 == d) print s
+}')
+[ -n "$total" ] || total=$(echo "$du_out" | sort -nr | awk 'NR == 1 { print $1 }')
+echo "Total: $(echo "$total ." | humanize | awk '{ print $1 }')"
+echo
+entries=$(echo "$du_out" | awk -v d="$dir" '{
+	s = $1; p = $0; sub(/^[0-9]+ /, "", p)
+	if (p != d) print
+}' | sort -nr)
+if [ "$all" -eq 1 ]; then
+	shown=$entries
+else
+	shown=$(echo "$entries" | awk -v t="$total" '$1 * 1000 >= t')
+fi
+echo "$shown" | humanize
+hidden=$(( $(echo "$entries" | wc -l) - $(echo "$shown" | wc -l) ))
+if [ "$hidden" -gt 0 ]; then
+	echo "(+ $hidden entries under 0.1% hidden, use --all to show them)"
+fi
 
 if [ "$all" -eq 0 ]; then
 	echo
 	echo "== Excluded from the file sections (use --all to include) =="
-	excluded=$(find "$dir" -mindepth 1 -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name __pycache__ \) -prune -print 2>/dev/null |
+	# shellcheck disable=SC2086
+	excluded=$(find "$dir" -mindepth 1 -type d $excl -prune -print 2>/dev/null |
 		while IFS= read -r d; do
 			du -sk "$d" 2>/dev/null | awk -v name="${d##*/}" '{ print $1 * 1024 " " name }'
 		done |
@@ -128,8 +170,14 @@ echo "$big" | awk '{
 	else ext = "(none)"
 	c[ext]++; t[ext] += s
 }
-END { for (e in c) print t[e] " " c[e] " " e }' | sort -nr | awk '{
-	s = $1; n = $2; e = $3 ($4 != "" ? " " $4 : "")
+END {
+	for (e in c) {
+		if (c[e] > 1) print t[e] " " c[e] " " e
+		else { oc++; ot += t[e] }
+	}
+	if (oc > 0) print ot " " oc " other (single files)"
+}' | sort -nr | awk '{
+	s = $1; n = $2; e = $3 ($4 != "" ? " " $4 : "") ($5 != "" ? " " $5 : "")
 	split("B K M G T P", u, " "); i = 1
 	while (s >= 1024 && i < 6) { s /= 1024; i++ }
 	printf "%6d files  %6.1f%s  %s\n", n, s, u[i], e
