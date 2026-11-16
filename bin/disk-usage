@@ -155,7 +155,14 @@ if [ -z "$big" ]; then
 	echo "None"
 	exit 0
 fi
-echo "$big" | head -n "$count" | humanize
+# Show the home directory as ~ (plain string match, no regex).
+echo "$big" | head -n "$count" | humanize | awk -v home="${HOME:-}" '{
+	if (home != "") {
+		i = index($0, "  " home "/")
+		if (i > 0) $0 = substr($0, 1, i + 1) "~" substr($0, i + 2 + length(home))
+	}
+	print
+}'
 
 echo
 echo "== Summary by extension (> ${min_mb}MB) =="
