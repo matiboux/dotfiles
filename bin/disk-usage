@@ -2,30 +2,36 @@
 # Show what takes space in a directory.
 # Supports Linux and macOS.
 #
-# Usage: disk-usage [-n COUNT] [-m SIZE_MB] [-h|--help] [DIR]
+# Usage: disk-usage [-n COUNT] [-m SIZE_MB] [-a|--all] [-h|--help] [DIR]
 #
-# Prints three sections for DIR (default: current directory):
+# Prints four sections for DIR (default: current directory):
 # - Depth 1: size of each entry, heaviest first.
+# - Excluded directories: total size of the dependency/VCS directories skipped
+#   in the file sections (.git, .venv, venv, node_modules, __pycache__),
+#   grouped by name.
 # - Heaviest files: the COUNT heaviest files (searched recursively) above the size threshold.
 # - Summary: number and total size of files above the threshold, by extension.
 #
 # Options:
 # - -n, --count COUNT: number of heaviest files to list (default: 5).
 # - -m, --min-size SIZE_MB: size threshold in MB (default: 10).
+# - -a, --all: do not exclude any directory from the file sections.
 # - -h, --help: show usage.
 set -eu
 
 count=5
 min_mb=10
+all=0
 
 usage() {
-	echo "Usage: ${0##*/} [-n|--count COUNT] [-m|--min-size SIZE_MB] [-h|--help] [DIR]"
+	echo "Usage: ${0##*/} [-n|--count COUNT] [-m|--min-size SIZE_MB] [-a|--all] [-h|--help] [DIR]"
 }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		-n|--count) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; count=$2; shift 2 ;;
 		-m|--min-size) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; min_mb=$2; shift 2 ;;
+		-a|--all) all=1; shift ;;
 		-h|--help) usage; exit 0 ;;
 		--) shift; break ;;
 		-*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -40,12 +46,27 @@ case "$count$min_mb" in
 	''|*[!0-9]*) echo "COUNT and SIZE_MB must be positive integers" >&2; exit 2 ;;
 esac
 
-# Print "<bytes> <path>" for each file above the threshold.
-# (find -exec ... {} + never runs stat without arguments, unlike an empty xargs.)
+# Print "<bytes> <path>" for each file above the threshold, skipping excluded
+# directories unless --all. find -exec ... {} + never runs stat without
+# arguments, unlike an empty xargs.
 if stat -c '%s' / >/dev/null 2>&1; then
-	big_files() { find "$dir" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null; }
+	big_files() {
+		if [ "$all" -eq 1 ]; then
+			find "$dir" -type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+		else
+			find "$dir" -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name __pycache__ \) -prune -o \
+				-type f -size +"${min_mb}"M -exec stat -c '%s %n' {} + 2>/dev/null
+		fi
+	}
 else
-	big_files() { find "$dir" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null; }
+	big_files() {
+		if [ "$all" -eq 1 ]; then
+			find "$dir" -type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+		else
+			find "$dir" -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name __pycache__ \) -prune -o \
+				-type f -size +"${min_mb}"M -exec stat -f '%z %N' {} + 2>/dev/null
+		fi
+	}
 fi
 
 # Turn a leading byte count into a human readable size.
@@ -65,6 +86,27 @@ du -k -d 1 "$dir" 2>/dev/null | sort -nr | awk '{
 	print s " " p
 }' | humanize
 
+if [ "$all" -eq 0 ]; then
+	echo
+	echo "== Excluded from the file sections (use --all to include) =="
+	excluded=$(find "$dir" -mindepth 1 -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name __pycache__ \) -prune -print 2>/dev/null |
+		while IFS= read -r d; do
+			du -sk "$d" 2>/dev/null | awk -v name="${d##*/}" '{ print $1 * 1024 " " name }'
+		done |
+		awk '{ c[$2]++; t[$2] += $1 } END { for (n in c) print t[n] " " c[n] " " n }' |
+		sort -nr)
+	if [ -z "$excluded" ]; then
+		echo "None"
+	else
+		echo "$excluded" | awk '{
+			s = $1; n = $2; e = $3
+			split("B K M G T P", u, " "); i = 1
+			while (s >= 1024 && i < 6) { s /= 1024; i++ }
+			printf "%6.1f%s  %4d dir%s  %s\n", s, u[i], n, (n > 1 ? "s" : " "), e
+		}'
+	fi
+fi
+
 echo
 echo "== Heaviest files (> ${min_mb}MB): top $count =="
 big=$(big_files | sort -nr || true)
@@ -78,14 +120,16 @@ echo
 echo "== Summary by extension (> ${min_mb}MB) =="
 echo "$big" | awk '{
 	s = $1; sub(/^[0-9]+ /, "")
-	n = split($0, parts, "/"); f = parts[n]
-	ext = (f ~ /\.[A-Za-z][A-Za-z0-9_]*$/) ? tolower(f) : ""
-	sub(/^.*\./, "", ext)
-	if (ext == "") ext = "(none)"
+	path = $0
+	n = split(path, parts, "/"); f = parts[n]
+	sub(/(\.[0-9]+)+$/, "", f)  # libfoo.so.12.1 -> libfoo.so
+	if (f ~ /\.[A-Za-z][A-Za-z0-9_]*$/) { ext = tolower(f); sub(/^.*\./, "", ext); ext = "." ext }
+	else if (path ~ /\/\.git\/objects\//) ext = "(git objects)"
+	else ext = "(none)"
 	c[ext]++; t[ext] += s
 }
-END { for (e in c) print t[e] " " c[e] " " (e == "(none)" ? e : "." e) }' | sort -nr | awk '{
-	s = $1; n = $2; e = $3
+END { for (e in c) print t[e] " " c[e] " " e }' | sort -nr | awk '{
+	s = $1; n = $2; e = $3 ($4 != "" ? " " $4 : "")
 	split("B K M G T P", u, " "); i = 1
 	while (s >= 1024 && i < 6) { s /= 1024; i++ }
 	printf "%6d files  %6.1f%s  %s\n", n, s, u[i], e
