@@ -17,7 +17,9 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_URL = os.environ.get("GLITCHTIP_URL", "https://glitchtip.matiboux.com")
-CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "glitchtip")
+CONFIG_DIR = os.environ.get("GLITCHTIP_CONFIG_DIR") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "glitchtip"
+)
 
 HELP = f"""\
 Usage: glitchtip <url> [options]
@@ -38,7 +40,7 @@ created in Profile > Auth Tokens). The key is never printed and never passed as 
   glitchtip login [{DEFAULT_URL}]     prompt for the key (hidden) and store it for that host
   glitchtip logout [{DEFAULT_URL}]    forget the stored key
 Key lookup order: $GLITCHTIP_API_KEY, $GLITCHTIP_API_KEY_FILE, {CONFIG_DIR}/<host>
-In a devcontainer, mount {CONFIG_DIR} (read-only) or forward GLITCHTIP_API_KEY_FILE.
+Override the directory with $GLITCHTIP_CONFIG_DIR (e.g. a read-only mount in a devcontainer).
 """
 
 
