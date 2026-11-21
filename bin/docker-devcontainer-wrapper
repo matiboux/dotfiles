@@ -1,5 +1,5 @@
 #!/bin/sh
-# docker wrapper: injects AI tool credentials/config (Claude Code, Codex, GitHub CLI) into
+# docker wrapper: injects AI tool credentials/config (Claude Code, Codex, GitHub CLI, GlitchTip CLI) into
 # devcontainers started through `docker run|create` or `docker compose`.
 set -eu
 
@@ -78,11 +78,24 @@ setup_gh() {
 	add_env "GH_CONFIG_DIR=${GH_CONTAINER_DIR}"
 }
 
+# ---------- Tool: GlitchTip CLI (bin/glitchtip) ----------
+
+GLITCHTIP_HOST_DIR="${GLITCHTIP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/glitchtip}"  # per-host API keys
+GLITCHTIP_CONTAINER_DIR="/opt/glitchtip-shared"
+
+setup_glitchtip() {
+	# Skip if absent, otherwise docker would create an empty root-owned dir
+	[ -d "$GLITCHTIP_HOST_DIR" ] || return 0
+	add_volume "${GLITCHTIP_HOST_DIR}:${GLITCHTIP_CONTAINER_DIR}:ro"
+	add_env "GLITCHTIP_CONFIG_DIR=${GLITCHTIP_CONTAINER_DIR}"
+}
+
 # ---------- Collect everything to inject ----------
 
 setup_claude
 setup_codex
 setup_gh
+setup_glitchtip
 
 # Tools that depend on the workspace source on the host.
 # Args: host path of the workspace source in $1 (may be empty)
