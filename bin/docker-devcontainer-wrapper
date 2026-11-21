@@ -1,4 +1,6 @@
 #!/bin/sh
+# docker wrapper: injects AI tool credentials/config (Claude Code, Codex) into
+# devcontainers started through `docker run|create` or `docker compose`.
 set -eu
 
 REAL_DOCKER="$(command -v docker)"
@@ -6,7 +8,12 @@ REAL_DOCKER="$(command -v docker)"
 NL='
 '
 
-# Shared state, filled by the tool sections below (newline-separated lists):
+# The devcontainer workspace is always mounted at this path
+WORKSPACE_TARGET="/workdir"
+
+# ---------- Shared state ----------
+
+# Filled by the tool sections below (newline-separated lists):
 #   VOLUMES: "host:container" bind mounts
 #   ENVS:    "NAME=value" environment variables
 VOLUMES=""
@@ -15,7 +22,15 @@ ENVS=""
 add_volume() { VOLUMES="${VOLUMES}${1}${NL}"; }
 add_env() { ENVS="${ENVS}${1}${NL}"; }
 
-# ---------- Claude Code (vscode extension) ----------
+# ---------- Helpers ----------
+
+# Claude-style directory key for a path: every non-alphanumeric char -> "-"
+path_key() {
+	printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# ---------- Tool: Claude Code (vscode extension) ----------
+
 CLAUDE_HOST_DIR="$HOME/.claude"        # your already-logged-in config
 CLAUDE_CONTAINER_DIR="/opt/claude-shared"
 
@@ -24,7 +39,23 @@ setup_claude() {
 	add_env "CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}"
 }
 
-# ---------- OpenAI Codex (vscode extension) ----------
+# Claude stores sessions/memory under projects/<cwd key>. Since the workspace
+# is always /workdir, every project would share projects/-workdir. Overlay it
+# with the project's own host dir (the one Claude uses when run locally), so
+# sessions are per-project and shared with the host.
+# Args: host path of the workspace source in $1
+setup_claude_project() {
+	scp_src="$1"
+	case "$scp_src" in /*) ;; *) return 0 ;; esac
+	scp_real="$(cd "$scp_src" 2>/dev/null && pwd -P)" || return 0
+	scp_dir="${CLAUDE_HOST_DIR}/projects/$(path_key "$scp_real")"
+	# Create as the user, otherwise docker would create a root-owned dir
+	mkdir -p "$scp_dir" || return 0
+	add_volume "${scp_dir}:${CLAUDE_CONTAINER_DIR}/projects/$(path_key "$WORKSPACE_TARGET")"
+}
+
+# ---------- Tool: OpenAI Codex (vscode extension) ----------
+
 CODEX_HOST_DIR="${CODEX_HOME:-$HOME/.codex}"  # auth.json, config...
 CODEX_CONTAINER_DIR="/opt/codex-shared"
 
@@ -35,13 +66,58 @@ setup_codex() {
 	add_env "CODEX_HOME=${CODEX_CONTAINER_DIR}"
 }
 
-# ---------- Credential propagation: collect everything to inject ----------
+# ---------- Collect everything to inject ----------
+
 setup_claude
 setup_codex
 
+# Tools that depend on the workspace source on the host.
+# Args: host path of the workspace source in $1 (may be empty)
+setup_workspace_tools() {
+	if [ -n "$1" ]; then setup_claude_project "$1"; fi
+}
+
+# ---------- Workspace detection ----------
+
+# Print the host source of a `docker run` volume spec ("src:target[:opts]")
+# in $1 if it targets $WORKSPACE_TARGET
+volume_workspace_source() {
+	vw_rest="${1#*:}"
+	if [ "${vw_rest%%:*}" = "$WORKSPACE_TARGET" ]; then printf '%s\n' "${1%%:*}"; fi
+}
+
+# Same for a --mount spec ("type=bind,source=...,target=...")
+mount_workspace_source() {
+	mw_list="$(printf '%s' "$1" | tr ',' '\n')"
+	mw_tgt="$(printf '%s\n' "$mw_list" | sed -n 's/^\(target\|destination\|dst\)=//p' | head -n 1)"
+	mw_src="$(printf '%s\n' "$mw_list" | sed -n 's/^\(source\|src\)=//p' | head -n 1)"
+	if [ "$mw_tgt" = "$WORKSPACE_TARGET" ]; then printf '%s\n' "$mw_src"; fi
+}
+
+# Print the host workspace source found in `docker run` args
+find_run_workspace() {
+	fr_next=""
+	for fr_a in "$@"; do
+		case "$fr_next" in
+			vol) volume_workspace_source "$fr_a"; fr_next=""; continue ;;
+			mnt) mount_workspace_source "$fr_a"; fr_next=""; continue ;;
+		esac
+		case "$fr_a" in
+			-v|--volume) fr_next=vol ;;
+			--volume=*)  volume_workspace_source "${fr_a#--volume=}" ;;
+			--mount)     fr_next=mnt ;;
+			--mount=*)   mount_workspace_source "${fr_a#--mount=}" ;;
+		esac
+	done
+}
+
 # ---------- `docker run` / `docker create` ----------
+
 handle_run() {
 	run_sub="$1"; shift
+	setup_workspace_tools "$(find_run_workspace "$@" | head -n 1)"
+
+	# Prepend -v/-e options for every collected volume/env
 	while IFS= read -r run_v; do
 		if [ -n "$run_v" ]; then set -- -v "$run_v" "$@"; fi
 	done <<EOF
@@ -57,16 +133,29 @@ EOF
 
 # ---------- `docker compose ...` ----------
 
-# Print compose services of the given -f files (newline-separated list in $1)
-list_services() {
-	ls_files="$1"
+# Run `docker compose -f <file>... config [flag]` quietly, tolerating failures
+# Args: newline-separated list of -f files in $1, optional config flag in $2
+compose_config() {
+	cc_files="$1"; cc_flag="${2:-}"
 	set --
-	while IFS= read -r ls_f; do
-		if [ -n "$ls_f" ]; then set -- "$@" -f "$ls_f"; fi
+	while IFS= read -r cc_f; do
+		if [ -n "$cc_f" ]; then set -- "$@" -f "$cc_f"; fi
 	done <<EOF
-$ls_files
+$cc_files
 EOF
-	"$REAL_DOCKER" compose "$@" config --services 2>/dev/null || true
+	"$REAL_DOCKER" compose "$@" config ${cc_flag:+"$cc_flag"} 2>/dev/null || true
+}
+
+# Print compose services of the given -f files
+list_services() { compose_config "$1" --services; }
+
+# Print the host source of the compose bind mount targeting $WORKSPACE_TARGET
+find_compose_workspace() {
+	compose_config "$1" | awk -v t="$WORKSPACE_TARGET" '
+		$1 == "-" && $2 == "type:" { src = "" }
+		$1 == "source:" { src = $2 }
+		$1 == "target:" && $2 == t && src ~ /^\// { print src; exit }
+	'
 }
 
 # Print a compose override file injecting volumes/envs into every service
@@ -120,6 +209,7 @@ handle_compose() {
 		services="$(list_services "$files")"
 
 		if [ -n "$services" ]; then
+			setup_workspace_tools "$(find_compose_workspace "$files")"
 			override_file="$(mktemp "${TMPDIR:-/tmp}/devcontainer-override-XXXXXX")"
 			generate_compose_override "$services" > "$override_file"
 
@@ -142,6 +232,7 @@ handle_compose() {
 }
 
 # ---------- Dispatch ----------
+
 case "${1:-}" in
 	run|create) handle_run "$@" ;;
 	compose)    shift; handle_compose "$@" ;;
