@@ -41,10 +41,10 @@ Issues list query args (as in the web UI URL; project can be repeated):
 Tip: copy a URL straight from the browser address bar.
 
 Options:
-  --json          print the raw API JSON instead of the text rendering
-  --limit N       max items for lists (default 25)
-  --status S      issues list: unresolved (default), resolved, ignored or all
-  --query Q       issues list: raw GlitchTip search query (overrides --status)
+  --json        print the raw API JSON instead of the text rendering
+  --limit N     max items for lists (default 25)
+  --status S    issues list: unresolved (default), resolved, ignored or all
+  --query Q     issues list: raw GlitchTip search query (overrides --status)
 
 Authentication (API key = GlitchTip auth token with the "event:read" scope,
 created in Profile > Auth Tokens). The key is never printed and never passed as an argument:
