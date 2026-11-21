@@ -24,10 +24,18 @@ CONFIG_DIR = os.environ.get("GLITCHTIP_CONFIG_DIR") or os.path.join(
 HELP = f"""\
 Usage: glitchtip <url> [options]
 
-  glitchtip {DEFAULT_URL}/                      list organizations
-  glitchtip {DEFAULT_URL}/<org>/projects        list projects of an organization
-  glitchtip {DEFAULT_URL}/<org>/issues          list issues (add ?project=5&query=is:resolved)
-  glitchtip {DEFAULT_URL}/<org>/issues/<id>     print one issue ("Copy for AI" format)
+  glitchtip <base_url>                      list organizations
+  glitchtip <base_url>/<org>/projects       list projects of an organization
+  glitchtip <base_url>/<org>/issues         list issues (add ?project=5&query=is:resolved)
+  glitchtip <base_url>/<org>/issues/<id>    print one issue ("Copy for AI" format)
+
+Where:
+  <base_url>  your GlitchTip instance, e.g. {DEFAULT_URL} (https:// is optional)
+  <org>       organization slug, the first path segment in the web UI URL
+              (run `glitchtip <base_url>` to list them)
+  <id>        issue number, as in <base_url>/<org>/issues/<id>
+
+Tip: copy a URL straight from the browser address bar.
 
 Options:
   --json          print the raw API JSON instead of the text rendering
@@ -37,9 +45,9 @@ Options:
 
 Authentication (API key = GlitchTip auth token with the "event:read" scope,
 created in Profile > Auth Tokens). The key is never printed and never passed as an argument:
-  glitchtip login [{DEFAULT_URL}]     prompt for the key (hidden) and store it for that host
-  glitchtip logout [{DEFAULT_URL}]    forget the stored key
-Key lookup order: $GLITCHTIP_API_KEY, $GLITCHTIP_API_KEY_FILE, {CONFIG_DIR}/<host>
+  glitchtip login [<base_url>]     prompt for the key (hidden) and store it for that host
+  glitchtip logout [<base_url>]    forget the stored key
+Key lookup order: $GLITCHTIP_API_KEY, $GLITCHTIP_API_KEY_FILE, {CONFIG_DIR}/<host of base_url>
 Override the directory with $GLITCHTIP_CONFIG_DIR (e.g. a read-only mount in a devcontainer).
 """
 
