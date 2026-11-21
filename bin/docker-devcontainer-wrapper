@@ -1,5 +1,5 @@
 #!/bin/sh
-# docker wrapper: injects AI tool credentials/config (Claude Code, Codex) into
+# docker wrapper: injects AI tool credentials/config (Claude Code, Codex, GitHub CLI) into
 # devcontainers started through `docker run|create` or `docker compose`.
 set -eu
 
@@ -66,10 +66,23 @@ setup_codex() {
 	add_env "CODEX_HOME=${CODEX_CONTAINER_DIR}"
 }
 
+# ---------- Tool: GitHub CLI ----------
+
+GH_HOST_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"  # hosts.yml (token)...
+GH_CONTAINER_DIR="/opt/gh-shared"
+
+setup_gh() {
+	# Skip if absent, otherwise docker would create an empty root-owned dir
+	[ -d "$GH_HOST_DIR" ] || return 0
+	add_volume "${GH_HOST_DIR}:${GH_CONTAINER_DIR}"
+	add_env "GH_CONFIG_DIR=${GH_CONTAINER_DIR}"
+}
+
 # ---------- Collect everything to inject ----------
 
 setup_claude
 setup_codex
+setup_gh
 
 # Tools that depend on the workspace source on the host.
 # Args: host path of the workspace source in $1 (may be empty)
