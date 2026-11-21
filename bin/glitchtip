@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Read-only GlitchTip client: pass a GlitchTip web URL, get the matching data printed on stdout.
 
-Nothing is ever written to disk .
+Nothing is ever written to disk (except the stored API key, see `login`).
 Standard library only.
 """
 
 import argparse
+import getpass
 import json
 import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 DEFAULT_URL = os.environ.get("GLITCHTIP_URL", "https://glitchtip.matiboux.com")
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "glitchtip")
 
 HELP = f"""\
 Usage: glitchtip <url> [options]
@@ -30,8 +33,12 @@ Options:
   --status S      issues list: unresolved (default), resolved, ignored or all
   --query Q       issues list: raw GlitchTip search query (overrides --status)
 
-Authentication: set GLITCHTIP_API_KEY (auth token with the "event:read" scope,
-created in Profile > Auth Tokens).
+Authentication (API key = GlitchTip auth token with the "event:read" scope,
+created in Profile > Auth Tokens). The key is never printed and never passed as an argument:
+  glitchtip login [{DEFAULT_URL}]     prompt for the key (hidden) and store it for that host
+  glitchtip logout [{DEFAULT_URL}]    forget the stored key
+Key lookup order: $GLITCHTIP_API_KEY, $GLITCHTIP_API_KEY_FILE, {CONFIG_DIR}/<host>
+In a devcontainer, mount {CONFIG_DIR} (read-only) or forward GLITCHTIP_API_KEY_FILE.
 """
 
 
@@ -50,8 +57,47 @@ def host_of(url):
     return normalize(url).netloc
 
 
+def token_path(host):
+    return os.path.join(CONFIG_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", host))
+
+
 def load_token(host):
-    return (os.environ.get("GLITCHTIP_API_KEY") or "").strip() or None
+    if os.environ.get("GLITCHTIP_API_KEY"):
+        return os.environ["GLITCHTIP_API_KEY"].strip()
+    path = os.environ.get("GLITCHTIP_API_KEY_FILE") or token_path(host)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def login(url):
+    host = host_of(url)
+    if sys.stdin.isatty():
+        token = getpass.getpass(f"API key for {host} (hidden): ")
+    else:
+        token = sys.stdin.readline()
+    token = token.strip()
+    if not token:
+        die("No key given.")
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    os.chmod(CONFIG_DIR, 0o700)
+    path = token_path(host)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w") as f:
+        f.write(token + "\n")
+    os.chmod(path, 0o600)
+    print(f"Key for {host} stored in {path} (mode 600).")
+
+
+def logout(url):
+    path = token_path(host_of(url))
+    try:
+        os.remove(path)
+        print(f"Removed {path}")
+    except FileNotFoundError:
+        die(f"No stored key for {host_of(url)}.")
 
 
 def get(base, path, token, params=None):
@@ -79,7 +125,7 @@ def get_url(url, token):
             return None, {}
         hint = ""
         if e.code in (401, 403):
-            hint = f"\nCheck the API key (scope: event:read). Check GLITCHTIP_API_KEY"
+            hint = f"\nCheck the API key (scope: event:read). Run: glitchtip login {urllib.parse.urlsplit(url).netloc}"
         die(f"HTTP {e.code} on {url}: {e.read().decode(errors='replace')[:300]}{hint}")
     except urllib.error.URLError as e:
         die(f"Cannot reach {url}: {e.reason}")
@@ -125,6 +171,10 @@ def render_issue(base, org, issue, event, projects):
 
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] in ("login", "logout"):
+        (login if argv[0] == "login" else logout)(argv[1] if len(argv) > 1 else DEFAULT_URL)
+        return
+
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("url", nargs="?")
     ap.add_argument("--json", action="store_true")
@@ -147,7 +197,7 @@ def main():
 
     token = load_token(u.netloc)
     if not token:
-        die(f"No API key for {u.netloc}. Set GLITCHTIP_API_KEY.")
+        die(f"No API key for {u.netloc}. Run: glitchtip login {u.netloc}\n(or set GLITCHTIP_API_KEY / GLITCHTIP_API_KEY_FILE)")
 
     def emit(data, lines):
         if args.json:
