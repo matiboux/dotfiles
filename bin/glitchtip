@@ -26,7 +26,7 @@ Usage: glitchtip <url> [options]
 
   glitchtip <base_url>                      list organizations
   glitchtip <base_url>/<org>/projects       list projects of an organization
-  glitchtip <base_url>/<org>/issues         list issues (add ?project=5&query=is:resolved)
+  glitchtip <base_url>/<org>/issues         list issues (query args: project, environment, sort, query)
   glitchtip <base_url>/<org>/issues/<id>    print one issue ("Copy for AI" format)
 
 Where:
@@ -34,6 +34,9 @@ Where:
   <org>       organization slug, the first path segment in the web UI URL
               (run `glitchtip <base_url>` to list them)
   <id>        issue number, as in <base_url>/<org>/issues/<id>
+
+Issues list query args (as in the web UI URL; project can be repeated):
+  ?project=5&project=6&environment=prod&sort=-last_seen&query=is:resolved
 
 Tip: copy a URL straight from the browser address bar.
 
