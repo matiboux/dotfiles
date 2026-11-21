@@ -24,10 +24,10 @@ CONFIG_DIR = os.environ.get("GLITCHTIP_CONFIG_DIR") or os.path.join(
 HELP = f"""\
 Usage: glitchtip <url> [options]
 
-  glitchtip <base_url>                      list organizations
-  glitchtip <base_url>/<org>/projects       list projects of an organization
-  glitchtip <base_url>/<org>/issues         list issues (query args: project, environment, sort, query)
-  glitchtip <base_url>/<org>/issues/<id>    print one issue ("Copy for AI" format)
+  glitchtip <base_url>                    list organizations
+  glitchtip <base_url>/<org>/projects     list projects of an organization
+  glitchtip <base_url>/<org>/issues       list issues (query args: project, environment, sort, query)
+  glitchtip <base_url>/<org>/issues/<id>  print one issue ("Copy for AI" format)
 
 Where:
   <base_url>  your GlitchTip instance, e.g. {DEFAULT_URL} (https:// is optional)
