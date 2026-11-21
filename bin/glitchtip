@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Read-only GlitchTip client: pass a GlitchTip web URL, get the matching data printed on stdout.
+
+Nothing is ever written to disk .
+Standard library only.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DEFAULT_URL = os.environ.get("GLITCHTIP_URL", "https://glitchtip.matiboux.com")
+
+HELP = f"""\
+Usage: glitchtip <url> [options]
+
+  glitchtip {DEFAULT_URL}/                      list organizations
+  glitchtip {DEFAULT_URL}/<org>/projects        list projects of an organization
+  glitchtip {DEFAULT_URL}/<org>/issues          list issues (add ?project=5&query=is:resolved)
+  glitchtip {DEFAULT_URL}/<org>/issues/<id>     print one issue ("Copy for AI" format)
+
+Options:
+  --json          print the raw API JSON instead of the text rendering
+  --limit N       max items for lists (default 25)
+  --status S      issues list: unresolved (default), resolved, ignored or all
+  --query Q       issues list: raw GlitchTip search query (overrides --status)
+
+Authentication: set GLITCHTIP_API_KEY (auth token with the "event:read" scope,
+created in Profile > Auth Tokens).
+"""
+
+
+def die(msg, code=1):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def normalize(url):
+    if "://" not in url:
+        url = "https://" + url
+    return urllib.parse.urlsplit(url)
+
+
+def host_of(url):
+    return normalize(url).netloc
+
+
+def load_token(host):
+    return (os.environ.get("GLITCHTIP_API_KEY") or "").strip() or None
+
+
+def get(base, path, token, params=None):
+    url = base + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+    return get_url(url, token)
+
+
+def get_url(url, token):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            # Cloudflare (error 1010) blocks urllib's default "Python-urllib" agent.
+            "User-Agent": "glitchtip-cli/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            return json.load(res), res.headers
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, {}
+        hint = ""
+        if e.code in (401, 403):
+            hint = f"\nCheck the API key (scope: event:read). Check GLITCHTIP_API_KEY"
+        die(f"HTTP {e.code} on {url}: {e.read().decode(errors='replace')[:300]}{hint}")
+    except urllib.error.URLError as e:
+        die(f"Cannot reach {url}: {e.reason}")
+
+
+def paginate(base, path, token, params, limit):
+    """Follow the Sentry-style `Link: <...>; rel="next"; results="true"` header, up to `limit` items."""
+    out = []
+    data, headers = get(base, path, token, params)
+    while True:
+        if data is None:
+            die("Not found.")
+        out.extend(data)
+        if len(out) >= limit:
+            return out[:limit]
+        nxt = None
+        for part in (headers.get("Link") or "").split(","):
+            if 'rel="next"' in part and 'results="true"' in part:
+                m = re.search(r"<([^>]+)>", part)
+                nxt = m.group(1) if m else None
+        if not nxt:
+            return out
+        data, headers = get_url(nxt, token)
+
+
+def render_issue(base, org, issue, event, projects):
+    """Same text as GlitchTip's "Copy for AI" button: a header, then the raw event JSON."""
+    event = event or issue  # no event stored for this issue: dump the issue itself
+    query = "&".join(f"project={p}" for p in projects)
+    url = f"{base}/{org}/issues/{issue['id']}" + (f"?{query}" if query else "")
+    header = [
+        "GlitchTip error event",
+        f"Source: {base}",
+        f"Instance: {base}",
+        f"Organization: {org}",
+        f"Issue ID: {issue['id']}",
+        f"Event ID: {event.get('id')}",
+        f"Event URL: {url}",
+    ]
+    raw = json.dumps(event, indent=2, ensure_ascii=False)
+    return "\n".join(header) + "\n\nRaw event JSON:\n```json\n" + raw + "\n```"
+
+
+def main():
+    argv = sys.argv[1:]
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("url", nargs="?")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--limit", type=int, default=25)
+    ap.add_argument("--status", default="unresolved")
+    ap.add_argument("--query")
+    ap.add_argument("-h", "--help", action="store_true")
+    args = ap.parse_args(argv)
+    if args.help:
+        print(HELP)
+        return
+    if not args.url:
+        print(HELP, file=sys.stderr)
+        sys.exit(1)
+
+    u = normalize(args.url)
+    base = f"{u.scheme}://{u.netloc}"
+    parts = [p for p in u.path.split("/") if p]
+    url_params = urllib.parse.parse_qs(u.query)
+
+    token = load_token(u.netloc)
+    if not token:
+        die(f"No API key for {u.netloc}. Set GLITCHTIP_API_KEY.")
+
+    def emit(data, lines):
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            print("\n".join(lines))
+
+    if not parts:
+        orgs = paginate(base, "/api/0/organizations/", token, None, args.limit)
+        if not orgs:
+            print(HELP, file=sys.stderr)
+            die("No organizations found for this key.")
+        emit(orgs, [f"{o['slug']}\t{o.get('name', '')}\t{base}/{o['slug']}/projects" for o in orgs])
+        return
+
+    org, kind = parts[0], (parts[1] if len(parts) > 1 else "projects")
+
+    if kind == "projects" and len(parts) <= 2:
+        projects = paginate(base, f"/api/0/organizations/{org}/projects/", token, None, args.limit)
+        emit(projects, [f"{p['id']}\t{p['slug']}\t{p.get('platform') or ''}" for p in projects])
+    elif kind == "issues" and len(parts) == 2:
+        params = {k: v for k, v in url_params.items() if k in ("project", "environment", "sort")}
+        query = args.query or (url_params.get("query") or [None])[0]
+        if query is None:
+            query = "" if args.status == "all" else f"is:{args.status}"
+        params["query"] = query
+        issues = paginate(base, f"/api/0/organizations/{org}/issues/", token, params, args.limit)
+        emit(issues, [
+            f"{i['id']}\t{i.get('status', '')}\t{i.get('count', '')}x\t{(i.get('project') or {}).get('slug', '')}\t{i['title']}"
+            for i in issues
+        ])
+    elif kind == "issues" and len(parts) == 3:
+        issue_id = parts[2]
+        issue, _ = get(base, f"/api/0/issues/{issue_id}/", token)
+        if issue is None:
+            die(f"Issue {issue_id} not found.")
+        event, _ = get(base, f"/api/0/issues/{issue_id}/events/latest/", token)
+        if args.json:
+            print(json.dumps({"issue": issue, "event": event}, indent=2, ensure_ascii=False))
+        else:
+            print(render_issue(base, org, issue, event, url_params.get("project", [])))
+    else:
+        print(HELP, file=sys.stderr)
+        die(f"Unsupported URL path: {u.path}")
+
+
+if __name__ == "__main__":
+    main()
