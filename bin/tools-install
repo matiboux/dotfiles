@@ -46,7 +46,7 @@ TOOLS='docker git curl wget unzip tree htop zip rsync ncdu tmux ripgrep fzf jq g
 
 BIN_DIR="${HOME}/.local/bin"
 STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/tools-install"
-GITHUB_USER='Matiboux'
+GITHUB_USER='matiboux'
 
 all=0
 force=0
