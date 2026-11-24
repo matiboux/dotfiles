@@ -1,0 +1,681 @@
+#!/bin/sh
+# Install or update common command-line tools.
+# Supports Linux (apt or dnf) and macOS (Homebrew).
+#
+# Usage: tools-install [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run]
+#                      [-h|--help] [TOOL...]
+#
+# Without arguments, a menu lists the tools with their status, to tick or untick
+# (arrow keys and space) before running. Without a terminal, it only lists them.
+#
+# Tools:
+# - system packages, installed through apt, dnf or brew: git curl wget unzip
+#   tree htop zip rsync ncdu tmux ripgrep fzf jq
+# - docker: the official convenience script on Linux (apt and dnf packages
+#   after that), the Docker Desktop cask on macOS.
+# - binaries downloaded from their official releases on Linux (Homebrew on
+#   macOS): gh glab yq lazydocker 7zip (the official 7-Zip, command 7zz).
+# - dockerc dockerx: the scripts of their GitHub releases, on Linux and macOS.
+#
+# Where things go:
+# - The binaries we download go to ~/.local/bin (no root needed), each recorded
+#   in ~/.local/state/tools-install/<tool>. That record is how we know we manage
+#   a binary, and can update it.
+# - System packages need root (sudo).
+#
+# What happens for each tool, depending on where its command is found:
+# - Not installed: install it.
+# - Installed by us: update it, unless it is already at the latest release.
+# - Installed by apt, dnf or brew: update it through that package manager.
+# - Anything else (manual install, other tool manager, Docker Desktop...): skipped,
+#   it is not ours to touch. The same goes for a file in ~/.local/bin that we
+#   have no record of.
+# - With --force, those last two are taken over: the tool is installed to
+#   ~/.local/bin and recorded as ours. Note that a binary found earlier in PATH
+#   keeps shadowing it.
+#
+# Options:
+# - -a, --all: select all the tools.
+# - -f, --force: also take over tools that are not managed by us.
+# - -l, --list: list the tools and their status, then exit.
+# - -n, --dry-run: show what would be done, change nothing.
+# - -h, --help: show usage.
+set -eu
+
+TOOLS='docker git curl wget unzip tree htop zip rsync ncdu tmux ripgrep fzf jq gh glab yq lazydocker 7zip dockerc dockerx'
+
+BIN_DIR="${HOME}/.local/bin"
+STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/tools-install"
+GITHUB_USER='Matiboux'
+
+all=0
+force=0
+list_only=0
+dry_run=0
+requested=''
+
+usage() {
+	echo "Usage: ${0##*/} [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run] [-h|--help] [TOOL...]"
+	echo "Tools: ${TOOLS}"
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-a|--all) all=1 ;;
+		-f|--force) force=1 ;;
+		-l|--list) list_only=1 ;;
+		-n|--dry-run) dry_run=1 ;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		-*)
+			usage >&2
+			exit 1
+			;;
+		*)
+			case " ${TOOLS} " in
+				*" $1 "*) requested="${requested} $1" ;;
+				*)
+					echo "❌ Unknown tool: $1" >&2
+					usage >&2
+					exit 1
+					;;
+			esac
+			;;
+	esac
+	shift
+done
+
+os="$(uname -s)"
+have() { command -v "$1" >/dev/null 2>&1; }
+
+interactive=0
+[ -t 0 ] && interactive=1
+
+case "${os}" in
+	Linux|Darwin) ;;
+	*)
+		echo "❌ Unsupported OS: ${os}" >&2
+		exit 1
+		;;
+esac
+
+case "$(uname -m)" in
+	x86_64|amd64) arch='amd64' ;;
+	aarch64|arm64) arch='arm64' ;;
+	*) arch='' ;;
+esac
+
+# --- Tool definitions ---
+
+# Command provided by the tool
+tool_cmd() {
+	case "$1" in
+		ripgrep) echo rg ;;
+		7zip) echo 7zz ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# How the tool is installed: pkg (system package), docker, bin (release binary)
+tool_kind() {
+	case "$1" in
+		docker) echo docker ;;
+		gh|glab|yq|lazydocker|7zip|dockerc|dockerx) echo bin ;;
+		*) echo pkg ;;
+	esac
+}
+
+# Homebrew formula of a bin tool (empty: no formula, downloaded directly)
+tool_brew() {
+	case "$1" in
+		7zip) echo sevenzip ;;
+		dockerc|dockerx) echo '' ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# --- Privileges and package managers ---
+
+as_root() {
+	if [ "$(id -u)" -eq 0 ]; then
+		"$@"
+	elif have sudo; then
+		sudo "$@"
+	else
+		echo '   Needs root, and sudo is missing.' >&2
+		return 1
+	fi
+}
+
+pkg_manager() {
+	if [ "${os}" = Darwin ]; then
+		have brew && echo brew
+	elif have apt-get; then
+		echo apt
+	elif have dnf; then
+		echo dnf
+	elif have brew; then
+		echo brew
+	fi
+}
+
+apt_updated=0
+
+pkg_install() {
+	case "$(pkg_manager)" in
+		apt)
+			if [ "${apt_updated}" -eq 0 ]; then
+				as_root apt-get update || return 1
+				apt_updated=1
+			fi
+			as_root apt-get install -y "$@"
+			;;
+		dnf) as_root dnf install -y "$@" ;;
+		brew) brew install "$@" ;;
+		*) echo '   No supported package manager (apt, dnf, brew).' >&2; return 1 ;;
+	esac
+}
+
+pkg_upgrade() {
+	case "$(pkg_manager)" in
+		apt)
+			if [ "${apt_updated}" -eq 0 ]; then
+				as_root apt-get update || return 1
+				apt_updated=1
+			fi
+			as_root apt-get install -y --only-upgrade "$@"
+			;;
+		dnf) as_root dnf upgrade -y "$@" ;;
+		brew) brew upgrade "$@" ;;
+		*) echo '   No supported package manager (apt, dnf, brew).' >&2; return 1 ;;
+	esac
+}
+
+# --- Where is a tool, and who manages it? ---
+
+# Sets R_OWNER: none | ours | local | apt | dnf | brew | external
+# R_PATH: path of the command found, R_PKG: package owning it (apt, dnf)
+R_OWNER=''
+R_PATH=''
+R_PKG=''
+brew_prefix=''
+
+resolve() {
+	cmd="$(tool_cmd "$1")"
+	R_OWNER='none'
+	R_PATH=''
+	R_PKG=''
+
+	if [ -x "${BIN_DIR}/${cmd}" ]; then
+		R_PATH="${BIN_DIR}/${cmd}"
+		if [ -f "${STATE_DIR}/$1" ]; then R_OWNER='ours'; else R_OWNER='local'; fi
+		return 0
+	fi
+
+	R_PATH="$(command -v "${cmd}" 2>/dev/null || true)"
+	case "${R_PATH}" in
+		/*) ;;
+		*) R_PATH=''; return 0 ;;
+	esac
+	R_OWNER='external'
+
+	real="$(readlink -f "${R_PATH}" 2>/dev/null || echo "${R_PATH}")"
+	if have dpkg; then
+		for candidate in "${R_PATH}" "${real}"; do
+			pkg="$(dpkg -S "${candidate}" 2>/dev/null | head -n 1 | sed 's/: \/.*//; s/:[^:]*$//')"
+			if [ -n "${pkg}" ]; then
+				R_OWNER='apt'
+				R_PKG="${pkg}"
+				return 0
+			fi
+		done
+	fi
+	if have rpm; then
+		for candidate in "${R_PATH}" "${real}"; do
+			if pkg="$(rpm -qf --qf '%{NAME}' "${candidate}" 2>/dev/null)"; then
+				R_OWNER='dnf'
+				R_PKG="${pkg}"
+				return 0
+			fi
+		done
+	fi
+	if have brew; then
+		[ -n "${brew_prefix}" ] || brew_prefix="$(brew --prefix 2>/dev/null || echo /nonexistent)"
+		case "${real}" in
+			"${brew_prefix}"/*) R_OWNER='brew' ;;
+		esac
+	fi
+	return 0
+}
+
+# One-line status of a tool, set in STATUS
+STATUS=''
+
+compute_status() {
+	resolve "$1"
+	case "${R_OWNER}" in
+		none) STATUS='not installed' ;;
+		ours)
+			version="$(sed -n 's/^version=//p' "${STATE_DIR}/$1" 2>/dev/null | head -n 1)"
+			STATUS="ours ${version} (${R_PATH})"
+			;;
+		local) STATUS="unmanaged file in our directory (${R_PATH})" ;;
+		external) STATUS="not managed by us (${R_PATH})" ;;
+		*) STATUS="${R_OWNER} (${R_PATH})" ;;
+	esac
+}
+
+# --- Downloads ---
+
+tmp_dir=''
+
+cleanup() {
+	[ -z "${tmp_dir}" ] || rm -rf "${tmp_dir}"
+}
+
+# Latest release tag of a GitHub repository, from the redirect of /releases/latest
+github_latest() {
+	curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$1/releases/latest" | sed 's|.*/tag/||'
+}
+
+# Latest release tag of a GitLab project (numeric id)
+gitlab_latest() {
+	curl -fsSL "https://gitlab.com/api/v4/projects/$1/releases/permalink/latest" \
+		| sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Download <url> into the temporary directory, print the file path
+download() {
+	file="${tmp_dir}/download.$$.$(basename "$1")"
+	curl -fsSL -o "${file}" "$1" || return 1
+	echo "${file}"
+}
+
+# Install <file> as ~/.local/bin/<name>, and record it
+# Usage: put_bin <tool> <file> <name> <version> <source>
+put_bin() {
+	mkdir -p "${BIN_DIR}" "${STATE_DIR}" || return 1
+	install -m 755 "$2" "${BIN_DIR}/$3" || return 1
+	printf 'version=%s\nsource=%s\n' "$4" "$5" > "${STATE_DIR}/$1"
+}
+
+# Download and install the latest release of a bin tool to ~/.local/bin.
+# Skips when we already have it, unless forced.
+direct_install() {
+	tool="$1"
+	have curl || { echo '   curl is required, install it first.' >&2; return 1; }
+	[ -n "${arch}" ] || [ "${tool}" = dockerc ] || [ "${tool}" = dockerx ] || {
+		echo "   Unsupported architecture: $(uname -m)" >&2
+		return 1
+	}
+	tmp_dir="$(mktemp -d)"
+
+	case "${tool}" in
+		gh)
+			tag="$(github_latest cli/cli)"
+			v="${tag#v}"
+			url="https://github.com/cli/cli/releases/download/${tag}/gh_${v}_linux_${arch}.tar.gz"
+			member="gh_${v}_linux_${arch}/bin/gh"
+			;;
+		glab)
+			tag="$(gitlab_latest 34675721)"
+			v="${tag#v}"
+			url="https://gitlab.com/gitlab-org/cli/-/releases/${tag}/downloads/glab_${v}_linux_${arch}.tar.gz"
+			member='bin/glab'
+			;;
+		lazydocker)
+			tag="$(github_latest jesseduffield/lazydocker)"
+			v="${tag#v}"
+			larch='x86_64'
+			[ "${arch}" = arm64 ] && larch='arm64'
+			url="https://github.com/jesseduffield/lazydocker/releases/download/${tag}/lazydocker_${v}_Linux_${larch}.tar.gz"
+			member='lazydocker'
+			;;
+		yq)
+			tag="$(github_latest mikefarah/yq)"
+			url="https://github.com/mikefarah/yq/releases/download/${tag}/yq_linux_${arch}"
+			member=''
+			;;
+		7zip)
+			tag="$(github_latest ip7z/7zip)"
+			zarch='x64'
+			[ "${arch}" = arm64 ] && zarch='arm64'
+			url="https://github.com/ip7z/7zip/releases/download/${tag}/7z$(echo "${tag}" | tr -d '.')-linux-${zarch}.tar.xz"
+			member='7zz'
+			;;
+		dockerc|dockerx)
+			tag="$(github_latest "${GITHUB_USER}/${tool}")"
+			url="https://raw.githubusercontent.com/${GITHUB_USER}/${tool}/${tag}/${tool}"
+			member=''
+			;;
+	esac
+	[ -n "${tag}" ] || { echo '   Could not find the latest release.' >&2; return 1; }
+
+	if [ "${force}" -eq 0 ] && [ -f "${STATE_DIR}/${tool}" ] \
+		&& [ "$(sed -n 's/^version=//p' "${STATE_DIR}/${tool}")" = "${tag}" ]; then
+		echo "   Already at the latest release (${tag})."
+		return 0
+	fi
+
+	echo "   Downloading ${tool} ${tag}..."
+	file="$(download "${url}")" || { echo "   Download failed: ${url}" >&2; return 1; }
+	if [ -n "${member}" ]; then
+		mkdir -p "${tmp_dir}/extract" || return 1
+		tar -xf "${file}" -C "${tmp_dir}/extract" || return 1
+		file="${tmp_dir}/extract/${member}"
+	fi
+	[ -f "${file}" ] || { echo "   Missing in the archive: ${member}" >&2; return 1; }
+	put_bin "${tool}" "${file}" "$(tool_cmd "${tool}")" "${tag}" "${url}" || return 1
+	echo "   Installed ${tool} ${tag} in ${BIN_DIR}."
+	rm -rf "${tmp_dir}"
+	tmp_dir=''
+}
+
+# --- Actions ---
+
+docker_install() {
+	if [ "${os}" = Darwin ]; then
+		have brew || { echo '   Homebrew is required.' >&2; return 1; }
+		brew install --cask docker
+	else
+		have curl || { echo '   curl is required, install it first.' >&2; return 1; }
+		tmp_dir="$(mktemp -d)"
+		curl -fsSL https://get.docker.com -o "${tmp_dir}/get-docker.sh" || return 1
+		as_root sh "${tmp_dir}/get-docker.sh"
+	fi
+}
+
+install_tool() {
+	case "$(tool_kind "$1")" in
+		pkg) pkg_install "$1" ;;
+		docker) docker_install ;;
+		bin)
+			formula="$(tool_brew "$1")"
+			if [ "${os}" = Darwin ] && [ -n "${formula}" ]; then
+				have brew || { echo '   Homebrew is required.' >&2; return 1; }
+				brew install "${formula}"
+			else
+				direct_install "$1"
+			fi
+			;;
+	esac
+}
+
+upgrade_tool() {
+	pkgs="${R_PKG}"
+	[ "${R_OWNER}" != brew ] || pkgs="$1"
+	case "$1:${pkgs}" in
+		docker:docker-ce-cli) pkgs='docker-ce docker-ce-cli' ;;
+	esac
+	if [ "${R_OWNER}" = brew ]; then
+		formula="$(tool_brew "$1")"
+		[ -z "${formula}" ] || [ "$(tool_kind "$1")" != bin ] || pkgs="${formula}"
+	fi
+	pkg_upgrade ${pkgs}
+}
+
+# What to do for a tool, set in ACTION (install, update, upgrade, adopt, skip)
+# and REASON
+ACTION=''
+REASON=''
+
+plan() {
+	resolve "$1"
+	REASON=''
+	case "${R_OWNER}" in
+		none) ACTION='install' ;;
+		ours) ACTION='update'; REASON='installed by us' ;;
+		apt|dnf|brew) ACTION='upgrade'; REASON="through ${R_OWNER}" ;;
+		local|external)
+			if [ "${force}" -eq 1 ]; then
+				ACTION='adopt'
+				REASON="taking over ${R_PATH}"
+			else
+				ACTION='skip'
+				REASON="not managed by us (${R_PATH}), use --force to take over"
+			fi
+			;;
+	esac
+	# Package tools are never downloaded: forcing falls back to the package manager
+	if [ "${ACTION}" = adopt ] && [ "$(tool_kind "$1")" != bin ]; then
+		ACTION='skip'
+		REASON="not managed by us (${R_PATH}), packages and docker can't be taken over"
+	fi
+}
+
+run_tool() {
+	case "${ACTION}" in
+		install|adopt|update) install_tool "$1" ;;
+		upgrade) upgrade_tool "$1" ;;
+	esac
+}
+
+# --- Menu ---
+
+tool_count=0
+for t in ${TOOLS}; do
+	tool_count=$((tool_count + 1))
+	eval "tool_name_${tool_count}=\$t"
+	eval "tool_sel_${tool_count}=0"
+done
+
+# Read the variable named by $1
+get() {
+	eval "printf '%s' \"\${$1}\""
+}
+
+# Compute the status of each tool, and tick the ones that can be handled
+init_menu() {
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		t="$(get "tool_name_${i}")"
+		compute_status "${t}"
+		eval "tool_status_${i}=\$STATUS"
+		case "${R_OWNER}" in
+			external|local) eval "tool_sel_${i}=0" ;;
+			*) eval "tool_sel_${i}=1" ;;
+		esac
+		i=$((i + 1))
+	done
+}
+
+select_tools() {
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		case "$1" in
+			all) eval "tool_sel_${i}=1" ;;
+			none) eval "tool_sel_${i}=0" ;;
+		esac
+		i=$((i + 1))
+	done
+}
+
+print_list() {
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		printf '%-11s %s\n' "$(get "tool_name_${i}")" "$(get "tool_status_${i}")"
+		i=$((i + 1))
+	done
+}
+
+# The menu is drawn on the terminal's alternate screen, redrawn in place, so it
+# never fills the scrollback and leaves the terminal as it was once closed.
+screen_on=0
+saved_stty=''
+
+enter_screen() {
+	saved_stty="$(stty -g 2>/dev/null || true)"
+	stty -icanon -echo min 1 time 0 2>/dev/null || true
+	if [ -t 1 ]; then
+		printf '\033[?1049h\033[?25l'
+		screen_on=1
+	fi
+}
+
+leave_screen() {
+	[ -z "${saved_stty}" ] || stty "${saved_stty}" 2>/dev/null || true
+	saved_stty=''
+	if [ "${screen_on}" -eq 1 ]; then
+		printf '\033[?25h\033[?1049l'
+		screen_on=0
+	fi
+}
+
+cursor=1
+
+hint() {
+	printf '\033[1;7m %s \033[0m %s   ' "$1" "$2"
+}
+
+print_menu() {
+	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
+	printf 'Tools to install or update (grey: not managed by us, skipped)\r\n\r\n'
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		mark=' '
+		[ "$(get "tool_sel_${i}")" = 1 ] && mark='x'
+		line="$(printf '[%s] %-11s %s' "${mark}" "$(get "tool_name_${i}")" "$(get "tool_status_${i}")")"
+		if [ "${i}" -eq "${cursor}" ]; then
+			printf '\033[7m > %s \033[0m\r\n' "${line}"
+		else
+			printf '   %s\r\n' "${line}"
+		fi
+		i=$((i + 1))
+	done
+	printf '\r\n'
+	hint '↑↓' 'move'
+	hint 'SPACE' 'toggle'
+	printf '\r\n'
+	hint 'A' 'all'
+	hint 'N' 'none'
+	hint 'ENTER' 'run'
+	hint 'Q' 'quit'
+	printf '\r\n'
+}
+
+read_hex() {
+	dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+
+toggle_tool() {
+	if [ "$(get "tool_sel_$1")" = 1 ]; then
+		eval "tool_sel_$1=0"
+	else
+		eval "tool_sel_$1=1"
+	fi
+}
+
+menu_loop() {
+	while true; do
+		print_menu
+		key="$(read_hex)"
+		case "${key}" in
+			''|71) leave_screen; echo 'Aborted.'; exit 0 ;; # end of input, q
+			0a|0d) return 0 ;; # enter
+			20) toggle_tool "${cursor}" ;; # space
+			61) select_tools all ;; # a
+			6e) select_tools none ;; # n
+			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
+			6a) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;; # j
+			1b)
+				stty min 0 time 1 2>/dev/null || true
+				second="$(read_hex)"
+				third="$(read_hex)"
+				stty min 1 time 0 2>/dev/null || true
+				case "${second}:${third}" in
+					5b:41|4f:41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
+					5b:42|4f:42) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;;
+				esac
+				;;
+		esac
+	done
+}
+
+run_menu() {
+	enter_screen
+	trap 'leave_screen' EXIT
+	trap 'leave_screen; exit 130' INT TERM
+	menu_loop
+	leave_screen
+	trap - EXIT INT TERM
+}
+
+# --- Main ---
+
+init_menu
+
+if [ "${list_only}" -eq 1 ]; then
+	print_list
+	exit 0
+fi
+
+if [ "${all}" -eq 1 ]; then
+	select_tools all
+elif [ -n "${requested}" ]; then
+	select_tools none
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		case " ${requested} " in
+			*" $(get "tool_name_${i}") "*) eval "tool_sel_${i}=1" ;;
+		esac
+		i=$((i + 1))
+	done
+elif [ "${interactive}" -eq 1 ]; then
+	run_menu
+else
+	print_list
+	echo
+	usage
+	exit 0
+fi
+
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+selected=0
+count_done=0
+count_skipped=0
+count_failed=0
+
+i=1
+while [ "${i}" -le "${tool_count}" ]; do
+	if [ "$(get "tool_sel_${i}")" = 1 ]; then
+		selected=$((selected + 1))
+		t="$(get "tool_name_${i}")"
+		plan "${t}"
+		case "${ACTION}" in
+			skip)
+				echo "⏭️ ${t}: ${REASON}"
+				count_skipped=$((count_skipped + 1))
+				;;
+			*)
+				echo "📦 ${t}: ${ACTION}${REASON:+ (${REASON})}"
+				if [ "${dry_run}" -eq 1 ]; then
+					echo '   (dry run)'
+				elif run_tool "${t}"; then
+					count_done=$((count_done + 1))
+				else
+					echo "   ❌ Failed, continuing."
+					count_failed=$((count_failed + 1))
+				fi
+				;;
+		esac
+	fi
+	i=$((i + 1))
+done
+
+echo
+if [ "${selected}" -eq 0 ]; then
+	echo 'Nothing selected.'
+elif [ "${dry_run}" -eq 1 ]; then
+	echo "👏 Dry run done: ${selected} tool(s) looked at, nothing was changed."
+else
+	echo "👏 Done! ${count_done} run, ${count_skipped} skipped, ${count_failed} failed."
+fi
+case ":${PATH}:" in
+	*":${BIN_DIR}:"*) ;;
+	*) [ ! -d "${BIN_DIR}" ] || echo "⚠️ ${BIN_DIR} is not in PATH." ;;
+esac
+[ "${count_failed}" -eq 0 ]
