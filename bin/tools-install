@@ -13,7 +13,8 @@
 # (arrow keys and space) before running. Without a terminal, it only lists them.
 #
 # Groups, to install a set of tools at once:
-# - @base: git curl wget unzip zip tree htop jq yq.
+# - @base: git curl wget unzip zip tree htop jq yq shellcheck.
+# - @git: gh glab.
 # - @docker: lazydocker dockerc dockerx. Needs docker to be installed already,
 #   otherwise nothing is done.
 # A group only installs what is missing: a tool that is already there is left
@@ -23,7 +24,7 @@
 #
 # Tools:
 # - system packages, installed through apt, dnf or brew: git curl wget unzip
-#   tree htop zip rsync rclone ripgrep jq
+#   tree htop zip rsync rclone ripgrep jq shellcheck
 # - docker: the official convenience script on Linux (apt and dnf packages
 #   after that), the Docker Desktop cask on macOS.
 # - binaries downloaded from their official releases on Linux (Homebrew on
@@ -60,13 +61,25 @@ set -eu
 # Groups of tools (see above)
 group_tools() {
 	case "$1" in
-		@base) echo 'git curl wget unzip zip tree htop jq yq' ;;
+		@base) echo 'git curl wget unzip zip tree htop jq yq shellcheck' ;;
+		@git) echo 'gh glab' ;;
 		@docker) echo 'lazydocker dockerc dockerx' ;;
 	esac
 }
-GROUPS_LIST='@base @docker'
+GROUPS_LIST='@base @git @docker'
 
-TOOLS='docker git curl wget unzip tree htop zip rsync rclone ripgrep jq gh glab yq lazydocker 7zip dockerc dockerx'
+# Ordered by section of the menu
+TOOLS='git curl wget unzip zip tree htop jq yq shellcheck gh glab docker lazydocker dockerc dockerx rsync rclone ripgrep 7zip'
+
+# Section of the menu a tool belongs to
+tool_section() {
+	case "$1" in
+		git|curl|wget|unzip|zip|tree|htop|jq|yq|shellcheck) echo '@base' ;;
+		gh|glab) echo '@git' ;;
+		docker|lazydocker|dockerc|dockerx) echo '@docker' ;;
+		*) echo 'Other' ;;
+	esac
+}
 
 BIN_DIR="${HOME}/.local/bin"
 STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/tools-install"
@@ -168,6 +181,14 @@ tool_cmd() {
 	case "$1" in
 		ripgrep) echo rg ;;
 		7zip) echo 7zz ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# Package name of a pkg tool, for the package manager in use
+tool_pkg() {
+	case "$1:$(pkg_manager)" in
+		shellcheck:dnf) echo ShellCheck ;;
 		*) echo "$1" ;;
 	esac
 }
@@ -469,7 +490,7 @@ docker_install() {
 
 install_tool() {
 	case "$(tool_kind "$1")" in
-		pkg) pkg_install "$1" ;;
+		pkg) pkg_install "$(tool_pkg "$1")" ;;
 		docker) docker_install ;;
 		bin)
 			formula="$(tool_brew "$1")"
@@ -583,6 +604,26 @@ init_menu() {
 		esac
 		i=$((i + 1))
 	done
+
+	# Menu rows: a heading before each section, then its tools. Row r is a
+	# heading (row_kind_r=h, row_a_r..row_b_r the tools of the section) or a
+	# tool (row_kind_r=t, row_a_r the tool).
+	row_count=0
+	prev=''
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		section="$(tool_section "$(get "tool_name_${i}")")"
+		if [ "${section}" != "${prev}" ]; then
+			row_count=$((row_count + 1))
+			eval "row_kind_${row_count}=h; row_a_${row_count}=${i}; row_b_${row_count}=${i}; row_name_${row_count}=\$section"
+			head_row="${row_count}"
+			prev="${section}"
+		fi
+		eval "row_b_${head_row}=${i}"
+		row_count=$((row_count + 1))
+		eval "row_kind_${row_count}=t; row_a_${row_count}=${i}"
+		i=$((i + 1))
+	done
 }
 
 select_tools() {
@@ -653,14 +694,14 @@ print_menu() {
 	case "${cols}" in ''|*[!0-9]*) cols=80 ;; esac
 	visible=$((rows - 5))
 	[ "${visible}" -ge 1 ] || visible=1
-	[ "${visible}" -le "${tool_count}" ] || visible="${tool_count}"
+	[ "${visible}" -le "${row_count}" ] || visible="${row_count}"
 	[ "${cursor}" -ge "${top}" ] || top="${cursor}"
 	[ "${cursor}" -lt $((top + visible)) ] || top=$((cursor - visible + 1))
 	[ "${top}" -ge 1 ] || top=1
 
 	title='Tools to install or update'
 	[ "${force}" -eq 1 ] || title="${title} (dimmed: not managed by us, use --force)"
-	[ "${visible}" -ge "${tool_count}" ] || title="${title} (${cursor}/${tool_count})"
+	[ "${visible}" -ge "${row_count}" ] || title="${title} (${cursor}/${row_count})"
 
 	frame=''
 	[ "${screen_on}" -eq 0 ] || frame="${esc}[?2026h${esc}[H"
@@ -671,21 +712,45 @@ print_menu() {
 	i="${top}"
 	last=$((top + visible - 1))
 	while [ "${i}" -le "${last}" ]; do
-		eval "sel=\${tool_sel_${i}} lock=\${tool_lock_${i}} label=\"\${tool_label_${i}}\""
-		mark=' '
-		[ "${sel}" -ne 1 ] || mark='x'
-		line="[${mark}] ${label}"
-		[ "${#line}" -le $((cols - 4)) ] || line="$(printf '%s' "${line}" | cut -c "1-$((cols - 4))")"
+		eval "kind=\${row_kind_${i}} ref=\${row_a_${i}}"
 		dim=''
-		[ "${lock}" -ne 1 ] || dim="${esc}[2m"
-		if [ "${i}" -eq "${cursor}" ]; then
-			frame="${frame}${dim}${esc}[7m > ${line} ${esc}[0m${esc}[K${crlf}"
+		if [ "${kind}" = h ]; then
+			# Section heading: tick state of the tools that can be ticked
+			eval "to=\${row_b_${i}} label=\${row_name_${i}}"
+			free=0
+			ticked=0
+			j="${ref}"
+			while [ "${j}" -le "${to}" ]; do
+				eval "lock=\${tool_lock_${j}} sel=\${tool_sel_${j}}"
+				if [ "${lock}" -ne 1 ]; then
+					free=$((free + 1))
+					[ "${sel}" -ne 1 ] || ticked=$((ticked + 1))
+				fi
+				j=$((j + 1))
+			done
+			mark=' '
+			[ "${ticked}" -eq 0 ] || mark='-'
+			[ "${ticked}" -ne "${free}" ] || [ "${free}" -eq 0 ] || mark='x'
+			[ "${free}" -ne 0 ] || dim="${esc}[2m"
+			line="[${mark}] ${esc}[1m${label}${esc}[22m"
+			pad=''
 		else
-			frame="${frame}${dim}   ${line}${esc}[0m${esc}[K${crlf}"
+			eval "sel=\${tool_sel_${ref}} lock=\${tool_lock_${ref}} label=\"\${tool_label_${ref}}\""
+			mark=' '
+			[ "${sel}" -ne 1 ] || mark='x'
+			line="[${mark}] ${label}"
+			[ "${#line}" -le $((cols - 6)) ] || line="$(printf '%s' "${line}" | cut -c "1-$((cols - 6))")"
+			[ "${lock}" -ne 1 ] || dim="${esc}[2m"
+			pad='  '
+		fi
+		if [ "${i}" -eq "${cursor}" ]; then
+			frame="${frame}${dim}${esc}[7m > ${pad}${line} ${esc}[0m${esc}[K${crlf}"
+		else
+			frame="${frame}${dim}   ${pad}${line}${esc}[0m${esc}[K${crlf}"
 		fi
 		i=$((i + 1))
 	done
-	if [ "${last}" -lt "${tool_count}" ]; then frame="${frame} ▼"; fi
+	if [ "${last}" -lt "${row_count}" ]; then frame="${frame} ▼"; fi
 	frame="${frame}${esc}[K${crlf}"
 	hint '↑↓' 'move'
 	hint 'SPACE' 'toggle'
@@ -699,14 +764,25 @@ print_menu() {
 	printf '%s' "${frame}"
 }
 
-toggle_tool() {
-	eval "lock=\${tool_lock_$1} sel=\${tool_sel_$1}"
-	[ "${lock}" -ne 1 ] || return 0
-	if [ "${sel}" -eq 1 ]; then
-		eval "tool_sel_$1=0"
-	else
-		eval "tool_sel_$1=1"
-	fi
+# Toggle the tool of a row, or all the tools of a section heading
+toggle_row() {
+	eval "kind=\${row_kind_$1} from=\${row_a_$1}"
+	to="${from}"
+	[ "${kind}" != h ] || eval "to=\${row_b_$1}"
+	# A section is unticked when all of it is ticked, ticked otherwise
+	target=0
+	j="${from}"
+	while [ "${j}" -le "${to}" ]; do
+		eval "lock=\${tool_lock_${j}} sel=\${tool_sel_${j}}"
+		[ "${lock}" -eq 1 ] || [ "${sel}" -eq 1 ] || target=1
+		j=$((j + 1))
+	done
+	j="${from}"
+	while [ "${j}" -le "${to}" ]; do
+		eval "lock=\${tool_lock_${j}}"
+		[ "${lock}" -eq 1 ] || eval "tool_sel_${j}=${target}"
+		j=$((j + 1))
+	done
 }
 
 # Bytes of an escape sequence that were cut at the end of a read
@@ -732,11 +808,11 @@ menu_loop() {
 			case "${key}" in
 				71) leave_screen; echo 'Aborted.'; exit 0 ;; # q
 				0a|0d) return 0 ;; # enter
-				20) toggle_tool "${cursor}" ;; # space
+				20) toggle_row "${cursor}" ;; # space
 				61) select_tools free ;; # a
 				6e) select_tools none ;; # n
 				6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
-				6a) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;; # j
+				6a) [ "${cursor}" -ge "${row_count}" ] || cursor=$((cursor + 1)) ;; # j
 				1b)
 					# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
 					if [ "$#" -eq 0 ]; then
@@ -748,7 +824,7 @@ menu_loop() {
 						else
 							case "$2" in
 								41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
-								42) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;;
+								42) [ "${cursor}" -ge "${row_count}" ] || cursor=$((cursor + 1)) ;;
 							esac
 							shift 2
 						fi
