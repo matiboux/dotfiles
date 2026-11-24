@@ -595,24 +595,22 @@ print_menu() {
 
 	title='Tools to install or update'
 	[ "${visible}" -ge "${tool_count}" ] || title="${title} (${cursor}/${tool_count})"
-	printf '%s\r\n\r\n' "${title}"
+	printf '%s\r\n' "${title}"
+	# Carets on the lines around the list when there is more above or below
+	if [ "${top}" -gt 1 ]; then printf ' ▲\r\n'; else printf '\r\n'; fi
 	i="${top}"
 	while [ "${i}" -lt $((top + visible)) ]; do
 		mark=' '
 		[ "$(get "tool_sel_${i}")" = 1 ] && mark='x'
 		line="$(printf '[%s] %-11s %s' "${mark}" "$(get "tool_name_${i}")" "$(get "tool_status_${i}")" | cut -c "1-$((cols - 4))")"
-		# Caret in the margin when there is more above or below
-		margin=' '
-		[ "${i}" -ne "${top}" ] || [ "${top}" -le 1 ] || margin='▲'
-		[ "${i}" -ne $((top + visible - 1)) ] || [ "${i}" -ge "${tool_count}" ] || margin='▼'
 		if [ "${i}" -eq "${cursor}" ]; then
-			printf '%s\033[7m > %s \033[0m\r\n' "${margin}" "${line}"
+			printf '\033[7m > %s \033[0m\r\n' "${line}"
 		else
-			printf '%s   %s\r\n' "${margin}" "${line}"
+			printf '   %s\r\n' "${line}"
 		fi
 		i=$((i + 1))
 	done
-	printf '\r\n'
+	if [ $((top + visible - 1)) -lt "${tool_count}" ]; then printf ' ▼\r\n'; else printf '\r\n'; fi
 	hint '↑↓' 'move'
 	hint 'SPACE' 'toggle'
 	printf '\r\n'
