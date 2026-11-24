@@ -110,6 +110,16 @@ tilde() {
 	esac
 }
 
+# Name of the searched directory for the messages: the current directory (the
+# default) by its own name, any other one as given.
+dir_name() {
+	if [ "${dir}" = '.' ]; then
+		basename "$(pwd)"
+	else
+		tilde "${dir}"
+	fi
+}
+
 # Turn a size in bytes into a human readable size.
 human_size() {
 	echo "$1" | awk '{
@@ -208,7 +218,7 @@ depth_opt=''
 [ -z "${depth}" ] || depth_opt="-maxdepth ${depth}"
 expr=$(names_expr)
 
-echo "Searching in $(tilde "${dir}")..." >&2
+echo "Searching in $(dir_name)..." >&2
 # Matching directories: stop at the first match (no search inside), links are ignored.
 # shellcheck disable=SC2086
 found=$(find "${dir}" ${depth_opt} -mindepth 1 -type d ${expr} -print -prune 2>/dev/null | sort)
@@ -271,7 +281,7 @@ if [ -n "${skipped_tracked}" ]; then
 fi
 
 if [ -z "${visible}" ]; then
-	echo "Nothing to clean in $(tilde "${dir}")"
+	echo "Nothing to clean in $(dir_name)"
 	exit 0
 fi
 
@@ -330,7 +340,7 @@ visible_count=$(echo "${visible}" | wc -w | tr -d ' ')
 
 # Task and label of each menu position, built once
 prepare_menu() {
-	menu_title="Directories to clean in $(tilde "${dir}")"
+	menu_title="Directories to clean in $(dir_name)"
 	pos=1
 	for i in ${visible}; do
 		eval "item_task_${pos}=${i}"
