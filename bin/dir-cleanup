@@ -325,50 +325,19 @@ leave_screen() {
 	fi
 }
 
-# Position of the cursor in the visible tasks (1-based) and their number
-cursor=1
+# Number of visible tasks (the menu positions)
 visible_count=$(echo "${visible}" | wc -w | tr -d ' ')
 
-# Index of the task under a menu position
-task_at() {
-	echo "${visible}" | awk -v n="$1" '{ print $n }'
-}
-
-# Print a key hint: the key as a highlighted badge, then its action
-hint() {
-	printf '\033[1;7m %s \033[0m %s   ' "$1" "$2"
-}
-
-print_menu() {
-	# Clear the screen and move the cursor to the top-left corner
-	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
-	printf 'Directories to clean in %s\r\n\r\n' "$(tilde "${dir}")"
+# Task and label of each menu position, built once
+prepare_menu() {
+	menu_title="Directories to clean in $(tilde "${dir}")"
 	pos=1
 	for i in ${visible}; do
-		mark=' '
-		[ "$(get "task_sel_${i}")" = 1 ] && mark='x'
-		if [ "${pos}" -eq "${cursor}" ]; then
-			printf '\033[7m > [%s] %s \033[0m\r\n' "${mark}" "$(describe "${i}")"
-		else
-			printf '   [%s] %s\r\n' "${mark}" "$(describe "${i}")"
-		fi
+		eval "item_task_${pos}=${i}"
+		label="$(describe "${i}")"
+		eval "item_label_${pos}=\$label"
 		pos=$((pos + 1))
 	done
-	printf '\r\n'
-	hint '↑↓' 'move'
-	hint 'SPACE' 'toggle'
-	printf '\r\n'
-	hint 'A' 'all'
-	hint 'D' 'defaults'
-	hint 'N' 'none'
-	hint 'ENTER' 'run'
-	hint 'Q' 'quit'
-	printf '\r\n'
-}
-
-# Read one byte as hexadecimal (empty on end of input)
-read_hex() {
-	dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
 }
 
 toggle_task() {
@@ -379,35 +348,139 @@ toggle_task() {
 	fi
 }
 
+# Toggle the task under a menu position
+toggle_pos() {
+	eval "toggle_index=\${item_task_$1}"
+	toggle_task "${toggle_index}"
+}
+
+cursor=1
+top=1
+
+# Control characters, for building a whole frame in one string
+esc="$(printf '\033')"
+crlf="$(printf '\r\n_')"
+crlf="${crlf%_}"
+
+# Append a key hint to the frame: the key as a highlighted badge, then its action
+hint() {
+	frame="${frame}${esc}[1;7m $1 ${esc}[0m $2   "
+}
+
+# The frame is built in a string and written at once, drawn over the previous
+# one (each line clears its own end) instead of clearing the screen first, so
+# nothing flickers. The terminal is asked to apply it atomically when it can.
+# The list scrolls when it does not fit the terminal.
+print_menu() {
+	# 2 lines of header and 3 of footer around the list
+	size="$(stty size 2>/dev/null || true)"
+	rows="${size%% *}"
+	cols="${size##* }"
+	case "${rows}" in ''|*[!0-9]*) rows=24 ;; esac
+	case "${cols}" in ''|*[!0-9]*) cols=80 ;; esac
+	# A terminal that does not report its size says 0
+	[ "${rows}" -gt 0 ] || rows=24
+	[ "${cols}" -gt 10 ] || cols=80
+	shown=$((rows - 5))
+	[ "${shown}" -ge 1 ] || shown=1
+	[ "${shown}" -le "${visible_count}" ] || shown="${visible_count}"
+	[ "${cursor}" -ge "${top}" ] || top="${cursor}"
+	[ "${cursor}" -lt $((top + shown)) ] || top=$((cursor - shown + 1))
+	[ "${top}" -ge 1 ] || top=1
+	last=$((top + shown - 1))
+
+	title="${menu_title}"
+	[ "${shown}" -ge "${visible_count}" ] || title="${title} (${cursor}/${visible_count})"
+
+	frame=''
+	[ "${screen_on}" -eq 0 ] || frame="${esc}[?2026h${esc}[H"
+	frame="${frame}${title}${esc}[K${crlf}"
+	# Carets on the lines around the list when there is more above or below
+	if [ "${top}" -gt 1 ]; then frame="${frame} ▲"; fi
+	frame="${frame}${esc}[K${crlf}"
+	pos="${top}"
+	while [ "${pos}" -le "${last}" ]; do
+		eval "task=\${item_task_${pos}} label=\"\${item_label_${pos}}\""
+		eval "sel=\${task_sel_${task}}"
+		mark=' '
+		[ "${sel}" -ne 1 ] || mark='x'
+		line="[${mark}] ${label}"
+		[ "${#line}" -le $((cols - 6)) ] || line="$(printf '%s' "${line}" | cut -c "1-$((cols - 6))")"
+		if [ "${pos}" -eq "${cursor}" ]; then
+			frame="${frame}${esc}[7m > ${line} ${esc}[0m${esc}[K${crlf}"
+		else
+			frame="${frame}   ${line}${esc}[K${crlf}"
+		fi
+		pos=$((pos + 1))
+	done
+	if [ "${last}" -lt "${visible_count}" ]; then frame="${frame} ▼"; fi
+	frame="${frame}${esc}[K${crlf}"
+	hint '↑↓' 'move'
+	hint 'SPACE' 'toggle'
+	frame="${frame}${esc}[K${crlf}"
+	hint 'A' 'all'
+	hint 'D' 'defaults'
+	hint 'N' 'none'
+	hint 'ENTER' 'run'
+	hint 'Q' 'quit'
+	frame="${frame}${esc}[K"
+	[ "${screen_on}" -eq 0 ] || frame="${frame}${esc}[J${esc}[?2026l"
+	printf '%s' "${frame}"
+}
+
+# Bytes of an escape sequence that were cut at the end of a read
+keybuf=''
+
+# Keys are read in bulk, and all those waiting are handled before the next
+# redraw: holding a key down never queues up redraws.
 menu_loop() {
 	while true; do
 		print_menu
-		key="$(read_hex)"
-		case "${key}" in
-			''|71) leave_screen; echo 'Aborted.'; exit 0 ;; # end of input, q
-			0a|0d) return 0 ;; # enter
-			20) toggle_task "$(task_at "${cursor}")" ;; # space
-			61) select_tasks all ;; # a
-			64) select_tasks default ;; # d
-			6e) select_tasks none ;; # n
-			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
-			6a) [ "${cursor}" -ge "${visible_count}" ] || cursor=$((cursor + 1)) ;; # j
-			1b)
-				# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
-				stty min 0 time 1 2>/dev/null || true
-				second="$(read_hex)"
-				third="$(read_hex)"
-				stty min 1 time 0 2>/dev/null || true
-				case "${second}:${third}" in
-					5b:41|4f:41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
-					5b:42|4f:42) [ "${cursor}" -ge "${visible_count}" ] || cursor=$((cursor + 1)) ;;
-				esac
-				;;
-		esac
+		chunk="$(dd bs=256 count=1 2>/dev/null | od -An -tx1 | tr -d '\n')"
+		if [ -z "${chunk}" ]; then # end of input
+			leave_screen
+			echo 'Aborted.'
+			exit 0
+		fi
+		# shellcheck disable=SC2086
+		set -- ${keybuf} ${chunk}
+		keybuf=''
+		while [ "$#" -gt 0 ]; do
+			key="$1"
+			shift
+			case "${key}" in
+				71) leave_screen; echo 'Aborted.'; exit 0 ;; # q
+				0a|0d) return 0 ;; # enter
+				20) toggle_pos "${cursor}" ;; # space
+				61) select_tasks all ;; # a
+				64) select_tasks default ;; # d
+				6e) select_tasks none ;; # n
+				6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
+				6a) [ "${cursor}" -ge "${visible_count}" ] || cursor=$((cursor + 1)) ;; # j
+				1b)
+					# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
+					if [ "$#" -eq 0 ]; then
+						keybuf="${key}"
+					elif [ "$1" = 5b ] || [ "$1" = 4f ]; then
+						if [ "$#" -lt 2 ]; then
+							keybuf="${key} $1"
+							set --
+						else
+							case "$2" in
+								41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
+								42) [ "${cursor}" -ge "${visible_count}" ] || cursor=$((cursor + 1)) ;;
+							esac
+							shift 2
+						fi
+					fi
+					;;
+			esac
+		done
 	done
 }
 
 run_menu() {
+	prepare_menu
 	enter_screen
 	trap 'leave_screen' EXIT
 	trap 'leave_screen; exit 130' INT TERM
