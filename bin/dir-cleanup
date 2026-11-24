@@ -261,8 +261,11 @@ describe() {
 	esac
 	label=$(get "task_label_$1")
 	[ "$(get "task_action_$1")" = 'gc' ] || label="${label} (${names})"
-	printf '%s: %s %s%s, %s' "${label}" "${found_count}" "${unit}" "${plural}" \
-		"$(human_size "$(get "task_bytes_$1")")"
+	# Deleting frees the whole size, compacting only part of it: say it is the current size
+	size_note=''
+	[ "$(get "task_action_$1")" != 'gc' ] || size_note=' now'
+	printf '%s: %s %s%s, %s%s' "${label}" "${found_count}" "${unit}" "${plural}" \
+		"$(human_size "$(get "task_bytes_$1")")" "${size_note}"
 }
 
 # Task menu entries only exist for what was found
