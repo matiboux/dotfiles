@@ -804,6 +804,9 @@ print_menu() {
 	cols="${size##* }"
 	case "${rows}" in ''|*[!0-9]*) rows=24 ;; esac
 	case "${cols}" in ''|*[!0-9]*) cols=80 ;; esac
+	# A terminal that does not report its size says 0
+	[ "${rows}" -gt 0 ] || rows=24
+	[ "${cols}" -gt 10 ] || cols=80
 	visible=$((rows - 5))
 	[ "${visible}" -ge 1 ] || visible=1
 	[ "${visible}" -le "${row_count}" ] || visible="${row_count}"
