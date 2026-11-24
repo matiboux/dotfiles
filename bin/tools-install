@@ -3,7 +3,11 @@
 # Supports Linux (apt or dnf) and macOS (Homebrew).
 #
 # Usage: tools-install [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run]
-#                      [-h|--help] [TOOL|@GROUP...]
+#                      [-v|--verbose] [-h|--help] [TOOL|@GROUP...]
+#
+# The output of the commands (apt, downloads...) is hidden, and only shown when
+# one fails, or with --verbose. Each tool gets a one-line result. sudo is asked
+# once at the start, only if a tool needs root.
 #
 # Without arguments, a menu lists the tools with their status, to tick or untick
 # (arrow keys and space) before running. Without a terminal, it only lists them.
@@ -49,6 +53,7 @@
 # - -f, --force: also take over tools that are not managed by us.
 # - -l, --list: list the tools and their status, then exit.
 # - -n, --dry-run: show what would be done, change nothing.
+# - -v, --verbose: show the full output of each command.
 # - -h, --help: show usage.
 set -eu
 
@@ -71,12 +76,13 @@ all=0
 force=0
 list_only=0
 dry_run=0
+verbose=0
 requested=''
 grouped=''
 group_requested=''
 
 usage() {
-	echo "Usage: ${0##*/} [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run] [-h|--help] [TOOL|@GROUP...]"
+	echo "Usage: ${0##*/} [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run] [-v|--verbose] [-h|--help] [TOOL|@GROUP...]"
 	echo "Tools: ${TOOLS}"
 	echo "Groups: ${GROUPS_LIST}"
 }
@@ -87,6 +93,7 @@ while [ "$#" -gt 0 ]; do
 		-f|--force) force=1 ;;
 		-l|--list) list_only=1 ;;
 		-n|--dry-run) dry_run=1 ;;
+		-v|--verbose) verbose=1 ;;
 		-h|--help)
 			usage
 			exit 0
@@ -118,6 +125,11 @@ while [ "$#" -gt 0 ]; do
 	esac
 	shift
 done
+
+# File descriptor 3 is the real standard output: commands run with their output
+# captured, but their one-line results still go through
+exec 3>&1
+say() { printf '   %s\n' "$*" >&3; }
 
 os="$(uname -s)"
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -172,9 +184,14 @@ tool_brew() {
 
 as_root() {
 	if [ "$(id -u)" -eq 0 ]; then
-		"$@"
+		env DEBIAN_FRONTEND=noninteractive "$@"
 	elif have sudo; then
-		sudo "$@"
+		# sudo prompts on the terminal, even with the output captured
+		if [ "${interactive}" -eq 1 ]; then
+			sudo env DEBIAN_FRONTEND=noninteractive "$@"
+		else
+			sudo -n env DEBIAN_FRONTEND=noninteractive "$@"
+		fi
 	else
 		echo '   Needs root, and sudo is missing.' >&2
 		return 1
@@ -201,6 +218,7 @@ pkg_install() {
 			if [ "${apt_updated}" -eq 0 ]; then
 				as_root apt-get update || return 1
 				apt_updated=1
+				say 'apt: package lists updated'
 			fi
 			as_root apt-get install -y "$@"
 			;;
@@ -216,6 +234,7 @@ pkg_upgrade() {
 			if [ "${apt_updated}" -eq 0 ]; then
 				as_root apt-get update || return 1
 				apt_updated=1
+				say 'apt: package lists updated'
 			fi
 			as_root apt-get install -y --only-upgrade "$@"
 			;;
@@ -303,8 +322,13 @@ compute_status() {
 
 tmp_dir=''
 
+keepalive_pid=''
+log_file=''
+
 cleanup() {
 	[ -z "${tmp_dir}" ] || rm -rf "${tmp_dir}"
+	[ -z "${keepalive_pid}" ] || kill "${keepalive_pid}" 2>/dev/null || true
+	[ -z "${log_file}" ] || rm -f "${log_file}"
 }
 
 # Latest release tag of a GitHub repository, from the redirect of /releases/latest
@@ -339,10 +363,10 @@ link_7z() {
 		return 0
 	fi
 	if [ -e "${BIN_DIR}/7z" ] || [ -L "${BIN_DIR}/7z" ] || have 7z; then
-		echo '   7z already exists, not linking it to 7zz.'
+		say '7z already exists, not linking it to 7zz.'
 		return 0
 	fi
-	ln -s 7zz "${BIN_DIR}/7z" && echo '   Linked 7z to 7zz.'
+	ln -s 7zz "${BIN_DIR}/7z" && say 'Linked 7z to 7zz.'
 }
 
 # Download and install the latest release of a bin tool to ~/.local/bin.
@@ -399,11 +423,10 @@ direct_install() {
 
 	if [ "${force}" -eq 0 ] && [ -f "${STATE_DIR}/${tool}" ] \
 		&& [ "$(sed -n 's/^version=//p' "${STATE_DIR}/${tool}")" = "${tag}" ]; then
-		echo "   Already at the latest release (${tag})."
+		RESULT="already at the latest release (${tag})"
 		return 0
 	fi
 
-	echo "   Downloading ${tool} ${tag}..."
 	file="$(download "${url}")" || { echo "   Download failed: ${url}" >&2; return 1; }
 	if [ -n "${member}" ]; then
 		mkdir -p "${tmp_dir}/extract" || return 1
@@ -412,7 +435,7 @@ direct_install() {
 	fi
 	[ -f "${file}" ] || { echo "   Missing in the archive: ${member}" >&2; return 1; }
 	put_bin "${tool}" "${file}" "$(tool_cmd "${tool}")" "${tag}" "${url}" || return 1
-	echo "   Installed ${tool} ${tag} in ${BIN_DIR}."
+	RESULT="${tag} installed in ${BIN_DIR}"
 	[ "${tool}" != 7zip ] || link_7z
 	rm -rf "${tmp_dir}"
 	tmp_dir=''
@@ -465,6 +488,7 @@ upgrade_tool() {
 # and REASON
 ACTION=''
 REASON=''
+RESULT=''
 
 plan() {
 	resolve "$1"
@@ -716,22 +740,78 @@ fi
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+# Plan tool number $1: sets t, ACTION and REASON
+plan_item() {
+	t="$(get "tool_name_$1")"
+	plan "${t}"
+	# Tools from a group are only installed when missing
+	if [ "$(get "tool_only_$1")" = 1 ] && [ "${ACTION}" != install ]; then
+		ACTION='skip'
+		REASON='already installed'
+	fi
+}
+
+# Whether the planned action needs root (run after plan_item)
+needs_root() {
+	[ "$(id -u)" -ne 0 ] || return 1
+	case "${ACTION}" in
+		upgrade) case "${R_OWNER}" in apt|dnf) return 0 ;; esac ;;
+		install|adopt|update)
+			case "$(tool_kind "${t}")" in
+				pkg|docker) [ "${os}" = Linux ] && return 0 ;;
+			esac
+			;;
+	esac
+	return 1
+}
+
+# Ask for sudo once, up front, and keep it alive for the whole run
+root_needed=0
+i=1
+while [ "${i}" -le "${tool_count}" ]; do
+	if [ "$(get "tool_sel_${i}")" = 1 ]; then
+		plan_item "${i}"
+		! needs_root || root_needed=1
+	fi
+	i=$((i + 1))
+done
+if [ "${root_needed}" -eq 1 ] && [ "${dry_run}" -eq 0 ] && [ "${interactive}" -eq 1 ] && have sudo; then
+	if sudo -v; then
+		(
+			while sleep 50; do
+				sudo -n true 2>/dev/null || exit
+				kill -0 "$$" 2>/dev/null || exit
+			done
+		) &
+		keepalive_pid=$!
+	else
+		echo '⚠️ No sudo access: tools requiring root will fail.' >&2
+	fi
+fi
+
+[ "${dry_run}" -eq 1 ] || [ "${verbose}" -eq 1 ] || log_file="$(mktemp)"
+
 selected=0
 count_done=0
 count_skipped=0
 count_failed=0
 
+# Say how an upgrade went, from the package manager's output
+upgrade_result() {
+	if grep -q '^0 upgraded, 0 newly installed' "${log_file}" 2>/dev/null \
+		|| grep -q 'Nothing to do' "${log_file}" 2>/dev/null \
+		|| { [ "$(pkg_manager)" = brew ] && [ ! -s "${log_file}" ]; }; then
+		echo 'already up to date'
+	else
+		echo 'upgraded'
+	fi
+}
+
 i=1
 while [ "${i}" -le "${tool_count}" ]; do
 	if [ "$(get "tool_sel_${i}")" = 1 ]; then
 		selected=$((selected + 1))
-		t="$(get "tool_name_${i}")"
-		plan "${t}"
-		# Tools from a group are only installed when missing
-		if [ "$(get "tool_only_${i}")" = 1 ] && [ "${ACTION}" != install ]; then
-			ACTION='skip'
-			REASON='already installed'
-		fi
+		plan_item "${i}"
 		case "${ACTION}" in
 			skip)
 				echo "⏭️ ${t}: ${REASON}"
@@ -741,10 +821,28 @@ while [ "${i}" -le "${tool_count}" ]; do
 				echo "📦 ${t}: ${ACTION}${REASON:+ (${REASON})}"
 				if [ "${dry_run}" -eq 1 ]; then
 					echo '   (dry run)'
-				elif run_tool "${t}"; then
+					i=$((i + 1))
+					continue
+				fi
+				RESULT=''
+				status=0
+				if [ "${verbose}" -eq 1 ]; then
+					run_tool "${t}" || status=$?
+				else
+					run_tool "${t}" >"${log_file}" 2>&1 || status=$?
+				fi
+				if [ "${status}" -eq 0 ]; then
+					if [ -z "${RESULT}" ]; then
+						case "${ACTION}" in
+							upgrade) RESULT="$(upgrade_result)" ;;
+							*) RESULT='installed' ;;
+						esac
+					fi
+					echo "   ✅ ${RESULT}"
 					count_done=$((count_done + 1))
 				else
-					echo "   ❌ Failed, continuing."
+					echo "   ❌ Failed (exit ${status}), continuing."
+					[ "${verbose}" -eq 1 ] || tail -n 15 "${log_file}" | sed 's/^ *//; s/^/   | /'
 					count_failed=$((count_failed + 1))
 				fi
 				;;
