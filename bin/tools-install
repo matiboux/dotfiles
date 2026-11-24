@@ -10,11 +10,12 @@
 #
 # Tools:
 # - system packages, installed through apt, dnf or brew: git curl wget unzip
-#   tree htop zip rsync ncdu tmux ripgrep fzf jq
+#   tree htop zip rsync rclone ripgrep jq
 # - docker: the official convenience script on Linux (apt and dnf packages
 #   after that), the Docker Desktop cask on macOS.
 # - binaries downloaded from their official releases on Linux (Homebrew on
-#   macOS): gh glab yq lazydocker 7zip (the official 7-Zip, command 7zz).
+#   macOS): gh glab yq lazydocker 7zip (the official 7-Zip, command 7zz,
+#   also linked as 7z when that name is free).
 # - dockerc dockerx: the scripts of their GitHub releases, on Linux and macOS.
 #
 # Where things go:
@@ -42,7 +43,7 @@
 # - -h, --help: show usage.
 set -eu
 
-TOOLS='docker git curl wget unzip tree htop zip rsync ncdu tmux ripgrep fzf jq gh glab yq lazydocker 7zip dockerc dockerx'
+TOOLS='docker git curl wget unzip tree htop zip rsync rclone ripgrep jq gh glab yq lazydocker 7zip dockerc dockerx'
 
 BIN_DIR="${HOME}/.local/bin"
 STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/tools-install"
@@ -301,6 +302,18 @@ put_bin() {
 	printf 'version=%s\nsource=%s\n' "$4" "$5" > "${STATE_DIR}/$1"
 }
 
+# Link 7z to 7zz, unless the name is taken by something else (p7zip...)
+link_7z() {
+	if [ -L "${BIN_DIR}/7z" ] && [ "$(readlink "${BIN_DIR}/7z")" = 7zz ]; then
+		return 0
+	fi
+	if [ -e "${BIN_DIR}/7z" ] || [ -L "${BIN_DIR}/7z" ] || have 7z; then
+		echo '   7z already exists, not linking it to 7zz.'
+		return 0
+	fi
+	ln -s 7zz "${BIN_DIR}/7z" && echo '   Linked 7z to 7zz.'
+}
+
 # Download and install the latest release of a bin tool to ~/.local/bin.
 # Skips when we already have it, unless forced.
 direct_install() {
@@ -369,6 +382,7 @@ direct_install() {
 	[ -f "${file}" ] || { echo "   Missing in the archive: ${member}" >&2; return 1; }
 	put_bin "${tool}" "${file}" "$(tool_cmd "${tool}")" "${tag}" "${url}" || return 1
 	echo "   Installed ${tool} ${tag} in ${BIN_DIR}."
+	[ "${tool}" != 7zip ] || link_7z
 	rm -rf "${tmp_dir}"
 	tmp_dir=''
 }
