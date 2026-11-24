@@ -15,8 +15,9 @@
 # Groups, to install a set of tools at once:
 # - @base: git curl wget unzip zip tree htop jq yq shellcheck.
 # - @git: gh glab.
-# - @docker: lazydocker dockerc dockerx. Needs docker to be installed already,
-#   otherwise nothing is done.
+# - @docker: lazydocker dockerc dockerx. These need docker: if it is not
+#   installed, add docker to the command or it fails (in the menu, they can't be
+#   ticked until docker is installed or ticked).
 # A group only installs what is missing: a tool that is already there is left
 # alone (no update), and a failure never changes the exit status. That makes it
 # safe to run again and again, from a bootstrap script for example. Name a tool
@@ -24,7 +25,9 @@
 #
 # Tools:
 # - system packages, installed through apt, dnf or brew: git curl wget unzip
-#   tree htop zip rsync rclone ripgrep jq shellcheck
+#   tree htop zip rsync rclone ripgrep fzf ncdu tmux fd bat jq shellcheck
+#   On apt, fd and bat are named fdfind and batcat: they are linked as fd and
+#   bat in ~/.local/bin when those names are free.
 # - docker: the official convenience script on Linux (apt and dnf packages
 #   after that), the Docker Desktop cask on macOS.
 # - binaries downloaded from their official releases on Linux (Homebrew on
@@ -69,7 +72,14 @@ group_tools() {
 GROUPS_LIST='@base @git @docker'
 
 # Ordered by section of the menu
-TOOLS='git curl wget unzip zip tree htop jq yq shellcheck gh glab docker lazydocker dockerc dockerx rsync rclone ripgrep 7zip'
+TOOLS='git curl wget unzip zip tree htop jq yq shellcheck gh glab docker lazydocker dockerc dockerx rsync rclone ripgrep fzf ncdu tmux fd bat 7zip'
+
+# Tool that must be installed for this one to be useful
+tool_dep() {
+	case "$1" in
+		lazydocker|dockerc|dockerx) echo docker ;;
+	esac
+}
 
 # Section of the menu a tool belongs to
 tool_section() {
@@ -185,10 +195,19 @@ tool_cmd() {
 	esac
 }
 
+# Other command names of a tool (apt names fd and bat differently)
+tool_alt() {
+	case "$1" in
+		fd) echo fdfind ;;
+		bat) echo batcat ;;
+	esac
+}
+
 # Package name of a pkg tool, for the package manager in use
 tool_pkg() {
 	case "$1:$(pkg_manager)" in
 		shellcheck:dnf) echo ShellCheck ;;
+		fd:apt|fd:dnf) echo fd-find ;;
 		*) echo "$1" ;;
 	esac
 }
@@ -290,13 +309,17 @@ resolve() {
 	R_PATH=''
 	R_PKG=''
 
-	if [ -x "${BIN_DIR}/${cmd}" ]; then
+	if [ "$(tool_kind "$1")" = bin ] && [ -x "${BIN_DIR}/${cmd}" ]; then
 		R_PATH="${BIN_DIR}/${cmd}"
 		if [ -f "${STATE_DIR}/$1" ]; then R_OWNER='ours'; else R_OWNER='local'; fi
 		return 0
 	fi
 
-	R_PATH="$(command -v "${cmd}" 2>/dev/null || true)"
+	R_PATH=''
+	for name in "${cmd}" $(tool_alt "$1"); do
+		R_PATH="$(command -v "${name}" 2>/dev/null || true)"
+		[ -z "${R_PATH}" ] || break
+	done
 	case "${R_PATH}" in
 		/*) ;;
 		*) R_PATH=''; return 0 ;;
@@ -490,7 +513,7 @@ docker_install() {
 
 install_tool() {
 	case "$(tool_kind "$1")" in
-		pkg) pkg_install "$(tool_pkg "$1")" ;;
+		pkg) pkg_install "$(tool_pkg "$1")" && link_aliases "$1" ;;
 		docker) docker_install ;;
 		bin)
 			formula="$(tool_brew "$1")"
@@ -514,7 +537,21 @@ upgrade_tool() {
 		formula="$(tool_brew "$1")"
 		[ -z "${formula}" ] || [ "$(tool_kind "$1")" != bin ] || pkgs="${formula}"
 	fi
-	pkg_upgrade ${pkgs}
+	pkg_upgrade ${pkgs} || return 1
+	link_aliases "$1"
+}
+
+# apt names fd and bat fdfind and batcat: link them as fd and bat when free
+EXTRA=''
+link_aliases() {
+	alt="$(tool_alt "$1")"
+	[ -n "${alt}" ] || return 0
+	have "$1" && return 0
+	target="$(command -v "${alt}" 2>/dev/null || true)"
+	[ -n "${target}" ] || return 0
+	[ ! -e "${BIN_DIR}/$1" ] && [ ! -L "${BIN_DIR}/$1" ] || return 0
+	mkdir -p "${BIN_DIR}" && ln -s "${target}" "${BIN_DIR}/$1" && EXTRA=", linked ${1}"
+	return 0
 }
 
 # How the action is done, for the logs: apt, dnf, brew, get.docker.com, release
@@ -579,6 +616,8 @@ for t in ${TOOLS}; do
 	eval "tool_sel_${tool_count}=0"
 	eval "tool_only_${tool_count}=0"
 	eval "tool_lock_${tool_count}=0"
+	eval "tool_inst_${tool_count}=1"
+	eval "tool_depidx_${tool_count}=0"
 done
 
 # Read the variable named by $1
@@ -594,6 +633,7 @@ init_menu() {
 		compute_status "${t}"
 		eval "tool_status_${i}=\$STATUS"
 		eval "tool_label_${i}=\$(printf '%-11s %s' \"\$t\" \"\$STATUS\")"
+		if [ "${R_OWNER}" = none ]; then eval "tool_inst_${i}=0"; else eval "tool_inst_${i}=1"; fi
 		# Tools we don't manage can't be ticked, unless forced
 		case "${R_OWNER}" in
 			external|local)
@@ -602,6 +642,20 @@ init_menu() {
 				;;
 			*) eval "tool_sel_${i}=1" ;;
 		esac
+		i=$((i + 1))
+	done
+
+	# Index of the tool each tool depends on
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		dep="$(tool_dep "$(get "tool_name_${i}")")"
+		if [ -n "${dep}" ]; then
+			j=1
+			while [ "${j}" -le "${tool_count}" ]; do
+				[ "$(get "tool_name_${j}")" != "${dep}" ] || eval "tool_depidx_${i}=${j}"
+				j=$((j + 1))
+			done
+		fi
 		i=$((i + 1))
 	done
 
@@ -622,6 +676,34 @@ init_menu() {
 		eval "row_b_${head_row}=${i}"
 		row_count=$((row_count + 1))
 		eval "row_kind_${row_count}=t; row_a_${row_count}=${i}"
+		i=$((i + 1))
+	done
+}
+
+# Whether tool number $1 can't be ticked: not managed by us, or its dependency
+# is neither installed nor ticked. Sets BLOCKED (0 or 1) and NEEDS (the
+# dependency, when that is the reason).
+BLOCKED=0
+NEEDS=''
+is_blocked() {
+	NEEDS=''
+	eval "BLOCKED=\${tool_lock_$1} d=\${tool_depidx_$1}"
+	if [ "${BLOCKED}" -ne 1 ] && [ "${d}" -ne 0 ]; then
+		eval "inst=\${tool_inst_${d}} dsel=\${tool_sel_${d}}"
+		if [ "${inst}" -ne 1 ] && [ "${dsel}" -ne 1 ]; then
+			BLOCKED=1
+			eval "NEEDS=\${tool_name_${d}}"
+		fi
+	fi
+	return 0
+}
+
+# Untick the tools whose dependency is no longer installed nor ticked
+cascade() {
+	i=1
+	while [ "${i}" -le "${tool_count}" ]; do
+		is_blocked "${i}"
+		[ "${BLOCKED}" -ne 1 ] || eval "tool_sel_${i}=0"
 		i=$((i + 1))
 	done
 }
@@ -721,9 +803,10 @@ print_menu() {
 			ticked=0
 			j="${ref}"
 			while [ "${j}" -le "${to}" ]; do
-				eval "lock=\${tool_lock_${j}} sel=\${tool_sel_${j}}"
-				if [ "${lock}" -ne 1 ]; then
+				is_blocked "${j}"
+				if [ "${BLOCKED}" -ne 1 ]; then
 					free=$((free + 1))
+					eval "sel=\${tool_sel_${j}}"
 					[ "${sel}" -ne 1 ] || ticked=$((ticked + 1))
 				fi
 				j=$((j + 1))
@@ -735,12 +818,14 @@ print_menu() {
 			line="[${mark}] ${esc}[1m${label}${esc}[22m"
 			pad=''
 		else
-			eval "sel=\${tool_sel_${ref}} lock=\${tool_lock_${ref}} label=\"\${tool_label_${ref}}\""
+			eval "sel=\${tool_sel_${ref}} label=\"\${tool_label_${ref}}\""
+			is_blocked "${ref}"
 			mark=' '
 			[ "${sel}" -ne 1 ] || mark='x'
 			line="[${mark}] ${label}"
+			[ -z "${NEEDS}" ] || line="${line} (needs ${NEEDS})"
 			[ "${#line}" -le $((cols - 6)) ] || line="$(printf '%s' "${line}" | cut -c "1-$((cols - 6))")"
-			[ "${lock}" -ne 1 ] || dim="${esc}[2m"
+			[ "${BLOCKED}" -ne 1 ] || dim="${esc}[2m"
 			pad='  '
 		fi
 		if [ "${i}" -eq "${cursor}" ]; then
@@ -764,7 +849,8 @@ print_menu() {
 	printf '%s' "${frame}"
 }
 
-# Toggle the tool of a row, or all the tools of a section heading
+# Toggle the tool of a row, or all the tools of a section heading. A tool that
+# is blocked can't be ticked.
 toggle_row() {
 	eval "kind=\${row_kind_$1} from=\${row_a_$1}"
 	to="${from}"
@@ -773,16 +859,24 @@ toggle_row() {
 	target=0
 	j="${from}"
 	while [ "${j}" -le "${to}" ]; do
-		eval "lock=\${tool_lock_${j}} sel=\${tool_sel_${j}}"
-		[ "${lock}" -eq 1 ] || [ "${sel}" -eq 1 ] || target=1
+		is_blocked "${j}"
+		eval "sel=\${tool_sel_${j}}"
+		[ "${BLOCKED}" -eq 1 ] || [ "${sel}" -eq 1 ] || target=1
 		j=$((j + 1))
 	done
 	j="${from}"
 	while [ "${j}" -le "${to}" ]; do
-		eval "lock=\${tool_lock_${j}}"
-		[ "${lock}" -eq 1 ] || eval "tool_sel_${j}=${target}"
+		is_blocked "${j}"
+		# In order: a tool ticked here can unblock the next ones
+		if [ "${target}" -eq 0 ]; then
+			eval "lock=\${tool_lock_${j}}"
+			[ "${lock}" -eq 1 ] || eval "tool_sel_${j}=0"
+		elif [ "${BLOCKED}" -ne 1 ]; then
+			eval "tool_sel_${j}=1"
+		fi
 		j=$((j + 1))
 	done
+	cascade
 }
 
 # Bytes of an escape sequence that were cut at the end of a read
@@ -809,8 +903,8 @@ menu_loop() {
 				71) leave_screen; echo 'Aborted.'; exit 0 ;; # q
 				0a|0d) return 0 ;; # enter
 				20) toggle_row "${cursor}" ;; # space
-				61) select_tools free ;; # a
-				6e) select_tools none ;; # n
+				61) select_tools free; cascade ;; # a
+				6e) select_tools none; cascade ;; # n
 				6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
 				6a) [ "${cursor}" -ge "${row_count}" ] || cursor=$((cursor + 1)) ;; # j
 				1b)
@@ -848,12 +942,8 @@ run_menu() {
 
 init_menu
 
-# Expand the groups. @docker needs docker.
+# Expand the groups
 for g in ${group_requested}; do
-	if [ "${g}" = '@docker' ] && ! have docker; then
-		echo '⏭️ @docker: docker is not installed, nothing to do.'
-		continue
-	fi
 	grouped="${grouped} $(group_tools "${g}")"
 done
 
@@ -892,6 +982,21 @@ fi
 
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+
+# A tool whose dependency is neither installed nor selected can't be run
+dep_failed=0
+i=1
+while [ "${i}" -le "${tool_count}" ]; do
+	if [ "$(get "tool_sel_${i}")" = 1 ]; then
+		is_blocked "${i}"
+		if [ -n "${NEEDS}" ]; then
+			echo "❌ $(get "tool_name_${i}") needs ${NEEDS}, which is not installed: add ${NEEDS} to the command." >&2
+			dep_failed=1
+		fi
+	fi
+	i=$((i + 1))
+done
+[ "${dep_failed}" -eq 0 ] || exit 1
 
 # Plan tool number $1: sets t, ACTION and REASON
 plan_item() {
@@ -983,6 +1088,7 @@ while [ "${i}" -le "${tool_count}" ]; do
 					pending=1
 				fi
 				RESULT=''
+				EXTRA=''
 				status=0
 				if [ "${verbose}" -eq 1 ]; then
 					run_tool "${t}" || status=$?
@@ -997,7 +1103,7 @@ while [ "${i}" -le "${tool_count}" ]; do
 						esac
 					fi
 					clear_pending
-					echo "✅ ${t}: ${RESULT} (${via})"
+					echo "✅ ${t}: ${RESULT}${EXTRA} (${via})"
 					count_done=$((count_done + 1))
 				else
 					clear_pending
