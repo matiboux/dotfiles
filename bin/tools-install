@@ -601,10 +601,14 @@ print_menu() {
 		mark=' '
 		[ "$(get "tool_sel_${i}")" = 1 ] && mark='x'
 		line="$(printf '[%s] %-11s %s' "${mark}" "$(get "tool_name_${i}")" "$(get "tool_status_${i}")" | cut -c "1-$((cols - 4))")"
+		# Caret in the margin when there is more above or below
+		margin=' '
+		[ "${i}" -ne "${top}" ] || [ "${top}" -le 1 ] || margin='▲'
+		[ "${i}" -ne $((top + visible - 1)) ] || [ "${i}" -ge "${tool_count}" ] || margin='▼'
 		if [ "${i}" -eq "${cursor}" ]; then
-			printf '\033[7m > %s \033[0m\r\n' "${line}"
+			printf '%s\033[7m > %s \033[0m\r\n' "${margin}" "${line}"
 		else
-			printf '   %s\r\n' "${line}"
+			printf '%s   %s\r\n' "${margin}" "${line}"
 		fi
 		i=$((i + 1))
 	done
