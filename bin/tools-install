@@ -640,7 +640,14 @@ init_menu() {
 				eval "tool_sel_${i}=0"
 				[ "${force}" -eq 1 ] || eval "tool_lock_${i}=1"
 				;;
-			*) eval "tool_sel_${i}=1" ;;
+			*)
+				# Ticked by default: the base tools, and what is already installed
+				if [ "${R_OWNER}" != none ] || [ "$(tool_section "${t}")" = '@base' ]; then
+					eval "tool_sel_${i}=1"
+				else
+					eval "tool_sel_${i}=0"
+				fi
+				;;
 		esac
 		i=$((i + 1))
 	done
@@ -678,6 +685,8 @@ init_menu() {
 		eval "row_kind_${row_count}=t; row_a_${row_count}=${i}"
 		i=$((i + 1))
 	done
+
+	cascade
 }
 
 # Whether tool number $1 can't be ticked: not managed by us, or its dependency
