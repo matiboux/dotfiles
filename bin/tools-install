@@ -3,10 +3,19 @@
 # Supports Linux (apt or dnf) and macOS (Homebrew).
 #
 # Usage: tools-install [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run]
-#                      [-h|--help] [TOOL...]
+#                      [-h|--help] [TOOL|@GROUP...]
 #
 # Without arguments, a menu lists the tools with their status, to tick or untick
 # (arrow keys and space) before running. Without a terminal, it only lists them.
+#
+# Groups, to install a set of tools at once:
+# - @base: git curl wget unzip zip tree htop jq yq.
+# - @docker: lazydocker dockerc dockerx. Needs docker to be installed already,
+#   otherwise nothing is done.
+# A group only installs what is missing: a tool that is already there is left
+# alone (no update), and a failure never changes the exit status. That makes it
+# safe to run again and again, from a bootstrap script for example. Name a tool
+# explicitly to update it.
 #
 # Tools:
 # - system packages, installed through apt, dnf or brew: git curl wget unzip
@@ -43,6 +52,15 @@
 # - -h, --help: show usage.
 set -eu
 
+# Groups of tools (see above)
+group_tools() {
+	case "$1" in
+		@base) echo 'git curl wget unzip zip tree htop jq yq' ;;
+		@docker) echo 'lazydocker dockerc dockerx' ;;
+	esac
+}
+GROUPS_LIST='@base @docker'
+
 TOOLS='docker git curl wget unzip tree htop zip rsync rclone ripgrep jq gh glab yq lazydocker 7zip dockerc dockerx'
 
 BIN_DIR="${HOME}/.local/bin"
@@ -54,10 +72,13 @@ force=0
 list_only=0
 dry_run=0
 requested=''
+grouped=''
+group_requested=''
 
 usage() {
-	echo "Usage: ${0##*/} [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run] [-h|--help] [TOOL...]"
+	echo "Usage: ${0##*/} [-a|--all] [-f|--force] [-l|--list] [-n|--dry-run] [-h|--help] [TOOL|@GROUP...]"
 	echo "Tools: ${TOOLS}"
+	echo "Groups: ${GROUPS_LIST}"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -73,6 +94,16 @@ while [ "$#" -gt 0 ]; do
 		-*)
 			usage >&2
 			exit 1
+			;;
+		@*)
+			case " ${GROUPS_LIST} " in
+				*" $1 "*) group_requested="${group_requested:-} $1" ;;
+				*)
+					echo "❌ Unknown group: $1" >&2
+					usage >&2
+					exit 1
+					;;
+			esac
 			;;
 		*)
 			case " ${TOOLS} " in
@@ -473,6 +504,7 @@ for t in ${TOOLS}; do
 	tool_count=$((tool_count + 1))
 	eval "tool_name_${tool_count}=\$t"
 	eval "tool_sel_${tool_count}=0"
+	eval "tool_only_${tool_count}=0"
 done
 
 # Read the variable named by $1
@@ -620,6 +652,15 @@ run_menu() {
 
 init_menu
 
+# Expand the groups. @docker needs docker.
+for g in ${group_requested}; do
+	if [ "${g}" = '@docker' ] && ! have docker; then
+		echo '⏭️ @docker: docker is not installed, nothing to do.'
+		continue
+	fi
+	grouped="${grouped} $(group_tools "${g}")"
+done
+
 if [ "${list_only}" -eq 1 ]; then
 	print_list
 	exit 0
@@ -627,15 +668,23 @@ fi
 
 if [ "${all}" -eq 1 ]; then
 	select_tools all
-elif [ -n "${requested}" ]; then
+elif [ -n "${requested}${grouped}" ]; then
 	select_tools none
 	i=1
 	while [ "${i}" -le "${tool_count}" ]; do
 		case " ${requested} " in
 			*" $(get "tool_name_${i}") "*) eval "tool_sel_${i}=1" ;;
+			*)
+				case " ${grouped} " in
+					*" $(get "tool_name_${i}") "*) eval "tool_sel_${i}=1; tool_only_${i}=1" ;;
+				esac
+				;;
 		esac
 		i=$((i + 1))
 	done
+elif [ -n "${group_requested}" ]; then
+	echo 'Nothing to install.'
+	exit 0
 elif [ "${interactive}" -eq 1 ]; then
 	run_menu
 else
@@ -659,6 +708,11 @@ while [ "${i}" -le "${tool_count}" ]; do
 		selected=$((selected + 1))
 		t="$(get "tool_name_${i}")"
 		plan "${t}"
+		# Tools from a group are only installed when missing
+		if [ "$(get "tool_only_${i}")" = 1 ] && [ "${ACTION}" != install ]; then
+			ACTION='skip'
+			REASON='already installed'
+		fi
 		case "${ACTION}" in
 			skip)
 				echo "⏭️ ${t}: ${REASON}"
@@ -692,4 +746,5 @@ case ":${PATH}:" in
 	*":${BIN_DIR}:"*) ;;
 	*) [ ! -d "${BIN_DIR}" ] || echo "⚠️ ${BIN_DIR} is not in PATH." ;;
 esac
-[ "${count_failed}" -eq 0 ]
+# Groups are best-effort: a failure does not fail the run
+[ "${count_failed}" -eq 0 ] || [ -z "${grouped}" ] || [ -n "${requested}" ]
