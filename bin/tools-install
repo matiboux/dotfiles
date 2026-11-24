@@ -572,6 +572,7 @@ init_menu() {
 		t="$(get "tool_name_${i}")"
 		compute_status "${t}"
 		eval "tool_status_${i}=\$STATUS"
+		eval "tool_label_${i}=\$(printf '%-11s %s' \"\$t\" \"\$STATUS\")"
 		# Tools we don't manage can't be ticked, unless forced
 		case "${R_OWNER}" in
 			external|local)
@@ -628,16 +629,22 @@ leave_screen() {
 }
 
 cursor=1
-
-hint() {
-	printf '\033[1;7m %s \033[0m %s   ' "$1" "$2"
-}
-
 top=1
 
-print_menu() {
-	[ "${screen_on}" -eq 1 ] && printf '\033[H\033[2J'
+# Control characters, for building a whole frame in one string
+esc="$(printf '\033')"
+crlf="$(printf '\r\n_')"
+crlf="${crlf%_}"
 
+# Append a key hint to the frame: the key as a highlighted badge, then its action
+hint() {
+	frame="${frame}${esc}[1;7m $1 ${esc}[0m $2   "
+}
+
+# The frame is built in a string and written at once, drawn over the previous
+# one (each line clears its own end) instead of clearing the screen first, so
+# nothing flickers. The terminal is asked to apply it atomically when it can.
+print_menu() {
 	# Fit the list in the terminal: 2 lines of header and 3 of footer
 	size="$(stty size 2>/dev/null || true)"
 	rows="${size%% *}"
@@ -654,69 +661,101 @@ print_menu() {
 	title='Tools to install or update'
 	[ "${force}" -eq 1 ] || title="${title} (dimmed: not managed by us, use --force)"
 	[ "${visible}" -ge "${tool_count}" ] || title="${title} (${cursor}/${tool_count})"
-	printf '%s\r\n' "${title}"
+
+	frame=''
+	[ "${screen_on}" -eq 0 ] || frame="${esc}[?2026h${esc}[H"
+	frame="${frame}${title}${esc}[K${crlf}"
 	# Carets on the lines around the list when there is more above or below
-	if [ "${top}" -gt 1 ]; then printf ' ▲\r\n'; else printf '\r\n'; fi
+	if [ "${top}" -gt 1 ]; then frame="${frame} ▲"; fi
+	frame="${frame}${esc}[K${crlf}"
 	i="${top}"
-	while [ "${i}" -lt $((top + visible)) ]; do
+	last=$((top + visible - 1))
+	while [ "${i}" -le "${last}" ]; do
+		eval "sel=\${tool_sel_${i}} lock=\${tool_lock_${i}} label=\"\${tool_label_${i}}\""
 		mark=' '
-		[ "$(get "tool_sel_${i}")" = 1 ] && mark='x'
-		line="$(printf '[%s] %-11s %s' "${mark}" "$(get "tool_name_${i}")" "$(get "tool_status_${i}")" | cut -c "1-$((cols - 4))")"
+		[ "${sel}" -ne 1 ] || mark='x'
+		line="[${mark}] ${label}"
+		[ "${#line}" -le $((cols - 4)) ] || line="$(printf '%s' "${line}" | cut -c "1-$((cols - 4))")"
 		dim=''
-		[ "$(get "tool_lock_${i}")" != 1 ] || dim='\033[2m'
+		[ "${lock}" -ne 1 ] || dim="${esc}[2m"
 		if [ "${i}" -eq "${cursor}" ]; then
-			printf "${dim}"'\033[7m > %s \033[0m\r\n' "${line}"
+			frame="${frame}${dim}${esc}[7m > ${line} ${esc}[0m${esc}[K${crlf}"
 		else
-			printf "${dim}"'   %s\033[0m\r\n' "${line}"
+			frame="${frame}${dim}   ${line}${esc}[0m${esc}[K${crlf}"
 		fi
 		i=$((i + 1))
 	done
-	if [ $((top + visible - 1)) -lt "${tool_count}" ]; then printf ' ▼\r\n'; else printf '\r\n'; fi
+	if [ "${last}" -lt "${tool_count}" ]; then frame="${frame} ▼"; fi
+	frame="${frame}${esc}[K${crlf}"
 	hint '↑↓' 'move'
 	hint 'SPACE' 'toggle'
-	printf '\r\n'
+	frame="${frame}${esc}[K${crlf}"
 	hint 'A' 'all'
 	hint 'N' 'none'
 	hint 'ENTER' 'run'
 	hint 'Q' 'quit'
-}
-
-read_hex() {
-	dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+	frame="${frame}${esc}[K"
+	[ "${screen_on}" -eq 0 ] || frame="${frame}${esc}[J${esc}[?2026l"
+	printf '%s' "${frame}"
 }
 
 toggle_tool() {
-	[ "$(get "tool_lock_$1")" != 1 ] || return 0
-	if [ "$(get "tool_sel_$1")" = 1 ]; then
+	eval "lock=\${tool_lock_$1} sel=\${tool_sel_$1}"
+	[ "${lock}" -ne 1 ] || return 0
+	if [ "${sel}" -eq 1 ]; then
 		eval "tool_sel_$1=0"
 	else
 		eval "tool_sel_$1=1"
 	fi
 }
 
+# Bytes of an escape sequence that were cut at the end of a read
+keybuf=''
+
+# Keys are read in bulk, and all those waiting are handled before the next
+# redraw: holding a key down never queues up redraws.
 menu_loop() {
 	while true; do
 		print_menu
-		key="$(read_hex)"
-		case "${key}" in
-			''|71) leave_screen; echo 'Aborted.'; exit 0 ;; # end of input, q
-			0a|0d) return 0 ;; # enter
-			20) toggle_tool "${cursor}" ;; # space
-			61) select_tools free ;; # a
-			6e) select_tools none ;; # n
-			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
-			6a) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;; # j
-			1b)
-				stty min 0 time 1 2>/dev/null || true
-				second="$(read_hex)"
-				third="$(read_hex)"
-				stty min 1 time 0 2>/dev/null || true
-				case "${second}:${third}" in
-					5b:41|4f:41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
-					5b:42|4f:42) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;;
-				esac
-				;;
-		esac
+		chunk="$(dd bs=256 count=1 2>/dev/null | od -An -tx1 | tr -d '\n')"
+		if [ -z "${chunk}" ]; then # end of input
+			leave_screen
+			echo 'Aborted.'
+			exit 0
+		fi
+		# shellcheck disable=SC2086
+		set -- ${keybuf} ${chunk}
+		keybuf=''
+		while [ "$#" -gt 0 ]; do
+			key="$1"
+			shift
+			case "${key}" in
+				71) leave_screen; echo 'Aborted.'; exit 0 ;; # q
+				0a|0d) return 0 ;; # enter
+				20) toggle_tool "${cursor}" ;; # space
+				61) select_tools free ;; # a
+				6e) select_tools none ;; # n
+				6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
+				6a) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;; # j
+				1b)
+					# Arrow keys send ESC [ A or ESC [ B (ESC O A/B in application mode)
+					if [ "$#" -eq 0 ]; then
+						keybuf="${key}"
+					elif [ "$1" = 5b ] || [ "$1" = 4f ]; then
+						if [ "$#" -lt 2 ]; then
+							keybuf="${key} $1"
+							set --
+						else
+							case "$2" in
+								41) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;;
+								42) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;;
+							esac
+							shift 2
+						fi
+					fi
+					;;
+			esac
+		done
 	done
 }
 
