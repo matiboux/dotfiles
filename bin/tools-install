@@ -129,7 +129,17 @@ done
 # File descriptor 3 is the real standard output: commands run with their output
 # captured, but their one-line results still go through
 exec 3>&1
-say() { printf '   %s\n' "$*" >&3; }
+pending=0
+clear_pending() {
+	if [ "${pending}" -eq 1 ]; then
+		printf '\r\033[2K' >&3
+		pending=0
+	fi
+}
+say() {
+	clear_pending
+	printf '%s\n' "$*" >&3
+}
 
 os="$(uname -s)"
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -218,7 +228,7 @@ pkg_install() {
 			if [ "${apt_updated}" -eq 0 ]; then
 				as_root apt-get update || return 1
 				apt_updated=1
-				say 'apt: package lists updated'
+				say '🔄 apt: package lists updated'
 			fi
 			as_root apt-get install -y "$@"
 			;;
@@ -234,7 +244,7 @@ pkg_upgrade() {
 			if [ "${apt_updated}" -eq 0 ]; then
 				as_root apt-get update || return 1
 				apt_updated=1
-				say 'apt: package lists updated'
+				say '🔄 apt: package lists updated'
 			fi
 			as_root apt-get install -y --only-upgrade "$@"
 			;;
@@ -363,10 +373,12 @@ link_7z() {
 		return 0
 	fi
 	if [ -e "${BIN_DIR}/7z" ] || [ -L "${BIN_DIR}/7z" ] || have 7z; then
-		say '7z already exists, not linking it to 7zz.'
+		RESULT="${RESULT}, 7z not linked (name taken)"
 		return 0
 	fi
-	ln -s 7zz "${BIN_DIR}/7z" && say 'Linked 7z to 7zz.'
+	if ln -s 7zz "${BIN_DIR}/7z"; then
+		RESULT="${RESULT}, linked 7z"
+	fi
 }
 
 # Download and install the latest release of a bin tool to ~/.local/bin.
@@ -423,7 +435,7 @@ direct_install() {
 
 	if [ "${force}" -eq 0 ] && [ -f "${STATE_DIR}/${tool}" ] \
 		&& [ "$(sed -n 's/^version=//p' "${STATE_DIR}/${tool}")" = "${tag}" ]; then
-		RESULT="already at the latest release (${tag})"
+		RESULT="already at ${tag}"
 		return 0
 	fi
 
@@ -484,6 +496,22 @@ upgrade_tool() {
 	pkg_upgrade ${pkgs}
 }
 
+# How the action is done, for the logs: apt, dnf, brew, get.docker.com, release
+context_of() {
+	case "${ACTION}" in
+		upgrade) echo "${R_OWNER}" ;;
+		*)
+			case "$(tool_kind "$1")" in
+				pkg) pkg_manager ;;
+				docker) if [ "${os}" = Darwin ]; then echo brew; else echo get.docker.com; fi ;;
+				bin)
+					if [ "${os}" = Darwin ] && [ -n "$(tool_brew "$1")" ]; then echo brew; else echo release; fi
+					;;
+			esac
+			;;
+	esac
+}
+
 # What to do for a tool, set in ACTION (install, update, upgrade, adopt, skip)
 # and REASON
 ACTION=''
@@ -529,6 +557,7 @@ for t in ${TOOLS}; do
 	eval "tool_name_${tool_count}=\$t"
 	eval "tool_sel_${tool_count}=0"
 	eval "tool_only_${tool_count}=0"
+	eval "tool_lock_${tool_count}=0"
 done
 
 # Read the variable named by $1
@@ -543,8 +572,12 @@ init_menu() {
 		t="$(get "tool_name_${i}")"
 		compute_status "${t}"
 		eval "tool_status_${i}=\$STATUS"
+		# Tools we don't manage can't be ticked, unless forced
 		case "${R_OWNER}" in
-			external|local) eval "tool_sel_${i}=0" ;;
+			external|local)
+				eval "tool_sel_${i}=0"
+				[ "${force}" -eq 1 ] || eval "tool_lock_${i}=1"
+				;;
 			*) eval "tool_sel_${i}=1" ;;
 		esac
 		i=$((i + 1))
@@ -556,6 +589,7 @@ select_tools() {
 	while [ "${i}" -le "${tool_count}" ]; do
 		case "$1" in
 			all) eval "tool_sel_${i}=1" ;;
+			free) [ "$(get "tool_lock_${i}")" = 1 ] || eval "tool_sel_${i}=1" ;;
 			none) eval "tool_sel_${i}=0" ;;
 		esac
 		i=$((i + 1))
@@ -618,6 +652,7 @@ print_menu() {
 	[ "${top}" -ge 1 ] || top=1
 
 	title='Tools to install or update'
+	[ "${force}" -eq 1 ] || title="${title} (dimmed: not managed by us, use --force)"
 	[ "${visible}" -ge "${tool_count}" ] || title="${title} (${cursor}/${tool_count})"
 	printf '%s\r\n' "${title}"
 	# Carets on the lines around the list when there is more above or below
@@ -627,10 +662,12 @@ print_menu() {
 		mark=' '
 		[ "$(get "tool_sel_${i}")" = 1 ] && mark='x'
 		line="$(printf '[%s] %-11s %s' "${mark}" "$(get "tool_name_${i}")" "$(get "tool_status_${i}")" | cut -c "1-$((cols - 4))")"
+		dim=''
+		[ "$(get "tool_lock_${i}")" != 1 ] || dim='\033[2m'
 		if [ "${i}" -eq "${cursor}" ]; then
-			printf '\033[7m > %s \033[0m\r\n' "${line}"
+			printf "${dim}"'\033[7m > %s \033[0m\r\n' "${line}"
 		else
-			printf '   %s\r\n' "${line}"
+			printf "${dim}"'   %s\033[0m\r\n' "${line}"
 		fi
 		i=$((i + 1))
 	done
@@ -649,6 +686,7 @@ read_hex() {
 }
 
 toggle_tool() {
+	[ "$(get "tool_lock_$1")" != 1 ] || return 0
 	if [ "$(get "tool_sel_$1")" = 1 ]; then
 		eval "tool_sel_$1=0"
 	else
@@ -664,7 +702,7 @@ menu_loop() {
 			''|71) leave_screen; echo 'Aborted.'; exit 0 ;; # end of input, q
 			0a|0d) return 0 ;; # enter
 			20) toggle_tool "${cursor}" ;; # space
-			61) select_tools all ;; # a
+			61) select_tools free ;; # a
 			6e) select_tools none ;; # n
 			6b) [ "${cursor}" -le 1 ] || cursor=$((cursor - 1)) ;; # k
 			6a) [ "${cursor}" -ge "${tool_count}" ] || cursor=$((cursor + 1)) ;; # j
@@ -818,11 +856,16 @@ while [ "${i}" -le "${tool_count}" ]; do
 				count_skipped=$((count_skipped + 1))
 				;;
 			*)
-				echo "📦 ${t}: ${ACTION}${REASON:+ (${REASON})}"
+				via="$(context_of "${t}")"
 				if [ "${dry_run}" -eq 1 ]; then
-					echo '   (dry run)'
+					echo "📦 ${t}: would ${ACTION} (${via})"
 					i=$((i + 1))
 					continue
+				fi
+				# Transient line while it works, replaced by the result
+				if [ "${verbose}" -eq 0 ] && [ -t 1 ]; then
+					printf '⏳ %s: %s (%s)...' "${t}" "${ACTION}" "${via}"
+					pending=1
 				fi
 				RESULT=''
 				status=0
@@ -838,10 +881,12 @@ while [ "${i}" -le "${tool_count}" ]; do
 							*) RESULT='installed' ;;
 						esac
 					fi
-					echo "   ✅ ${RESULT}"
+					clear_pending
+					echo "✅ ${t}: ${RESULT} (${via})"
 					count_done=$((count_done + 1))
 				else
-					echo "   ❌ Failed (exit ${status}), continuing."
+					clear_pending
+					echo "❌ ${t}: ${ACTION} failed, exit ${status} (${via})"
 					[ "${verbose}" -eq 1 ] || tail -n 15 "${log_file}" | sed 's/^ *//; s/^/   | /'
 					count_failed=$((count_failed + 1))
 				fi
