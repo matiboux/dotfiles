@@ -297,6 +297,9 @@ print_menu() {
 	cols="${size##* }"
 	case "${rows}" in ''|*[!0-9]*) rows=24 ;; esac
 	case "${cols}" in ''|*[!0-9]*) cols=80 ;; esac
+	# A terminal that does not report its size says 0
+	[ "${rows}" -gt 0 ] || rows=24
+	[ "${cols}" -gt 10 ] || cols=80
 	shown=$((rows - 5))
 	[ "${shown}" -ge 1 ] || shown=1
 	[ "${shown}" -le "${task_count}" ] || shown="${task_count}"
