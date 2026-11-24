@@ -15,7 +15,7 @@
 # Groups, to install a set of tools at once:
 # - @base: git curl wget unzip zip tree htop jq yq shellcheck.
 # - @git: gh glab.
-# - @docker: lazydocker dockerc dockerx. These need docker: if it is not
+# - @docker: lazydocker dockerc dockerx hadolint dive. These need docker: if it is not
 #   installed, add docker to the command or it fails (in the menu, they can't be
 #   ticked until docker is installed or ticked).
 # A group only installs what is missing: a tool that is already there is left
@@ -31,7 +31,7 @@
 # - docker: the official convenience script on Linux (apt and dnf packages
 #   after that), the Docker Desktop cask on macOS.
 # - binaries downloaded from their official releases on Linux (Homebrew on
-#   macOS): gh glab yq lazydocker 7zip (the official 7-Zip, command 7zz,
+#   macOS): gh glab yq lazydocker hadolint dive 7zip (the official 7-Zip, command 7zz,
 #   also linked as 7z when that name is free).
 # - dockerc dockerx: the scripts of their GitHub releases, on Linux and macOS.
 #
@@ -66,18 +66,18 @@ group_tools() {
 	case "$1" in
 		@base) echo 'git curl wget unzip zip tree htop jq yq shellcheck' ;;
 		@git) echo 'gh glab' ;;
-		@docker) echo 'lazydocker dockerc dockerx' ;;
+		@docker) echo 'lazydocker dockerc dockerx hadolint dive' ;;
 	esac
 }
 GROUPS_LIST='@base @git @docker'
 
 # Ordered by section of the menu
-TOOLS='git curl wget unzip zip tree htop jq yq shellcheck gh glab docker lazydocker dockerc dockerx rsync rclone ripgrep fzf ncdu tmux fd bat 7zip'
+TOOLS='git curl wget unzip zip tree htop jq yq shellcheck gh glab docker lazydocker dockerc dockerx hadolint dive rsync rclone ripgrep fzf ncdu tmux fd bat 7zip'
 
 # Tool that must be installed for this one to be useful
 tool_dep() {
 	case "$1" in
-		lazydocker|dockerc|dockerx) echo docker ;;
+		lazydocker|dockerc|dockerx|hadolint|dive) echo docker ;;
 	esac
 }
 
@@ -86,7 +86,7 @@ tool_section() {
 	case "$1" in
 		git|curl|wget|unzip|zip|tree|htop|jq|yq|shellcheck) echo '@base' ;;
 		gh|glab) echo '@git' ;;
-		docker|lazydocker|dockerc|dockerx) echo '@docker' ;;
+		docker|lazydocker|dockerc|dockerx|hadolint|dive) echo '@docker' ;;
 		*) echo 'Other' ;;
 	esac
 }
@@ -216,7 +216,7 @@ tool_pkg() {
 tool_kind() {
 	case "$1" in
 		docker) echo docker ;;
-		gh|glab|yq|lazydocker|7zip|dockerc|dockerx) echo bin ;;
+		gh|glab|yq|lazydocker|7zip|dockerc|dockerx|hadolint|dive) echo bin ;;
 		*) echo pkg ;;
 	esac
 }
@@ -462,6 +462,19 @@ direct_install() {
 			url="https://github.com/mikefarah/yq/releases/download/${tag}/yq_linux_${arch}"
 			member=''
 			;;
+		hadolint)
+			tag="$(github_latest hadolint/hadolint)"
+			harch='x86_64'
+			[ "${arch}" = arm64 ] && harch='arm64'
+			url="https://github.com/hadolint/hadolint/releases/download/${tag}/hadolint-linux-${harch}"
+			member=''
+			;;
+		dive)
+			tag="$(github_latest wagoodman/dive)"
+			v="${tag#v}"
+			url="https://github.com/wagoodman/dive/releases/download/${tag}/dive_${v}_linux_${arch}.tar.gz"
+			member='dive'
+			;;
 		7zip)
 			tag="$(github_latest ip7z/7zip)"
 			zarch='x64'
@@ -539,6 +552,14 @@ upgrade_tool() {
 	fi
 	pkg_upgrade ${pkgs} || return 1
 	link_aliases "$1"
+}
+
+# dockerc needs Docker Compose v2: warn when it is missing
+check_compose() {
+	[ "$1" = dockerc ] || return 0
+	have docker || return 0
+	docker compose version >/dev/null 2>&1 || EXTRA="${EXTRA}, ⚠️ docker compose v2 is missing, dockerc needs it"
+	return 0
 }
 
 # apt names fd and bat fdfind and batcat: link them as fd and bat when free
@@ -1111,6 +1132,7 @@ while [ "${i}" -le "${tool_count}" ]; do
 							*) RESULT='installed' ;;
 						esac
 					fi
+					check_compose "${t}"
 					clear_pending
 					echo "✅ ${t}: ${RESULT}${EXTRA} (${via})"
 					count_done=$((count_done + 1))
