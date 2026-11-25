@@ -4,7 +4,8 @@
 #
 # Usage: git-clean-synced-branches [-h|--help] [-n|--dry-run] [-y|--yes]
 #
-# Remotes are fetched first. A local branch is compared with its upstream branch
+# Remotes are fetched and pruned first (only remote-tracking refs are removed,
+# never local branches), so branches deleted on a remote are detected. A local branch is compared with its upstream branch
 # or, if it has none, with the remote branches of the same name on any remote
 # (synced if one of them has the same commit). Branches handled:
 # - synced: same commit as the remote branch, so nothing is lost. Force-deleted.
@@ -20,7 +21,8 @@
 #
 # Options:
 # - -h, --help: show usage.
-# - -n, --dry-run: list the branches that would be deleted, without deleting or pruning.
+# - -n, --dry-run: list the branches that would be deleted, without deleting.
+#   (remotes are still fetched and pruned)
 # - -y, --yes: do not ask for confirmation.
 #
 # Environment:
@@ -98,11 +100,11 @@ current_branch="$(git_repo branch --show-current)"
 
 # ---
 
-if ! git_repo fetch --all --quiet; then
+if ! git_repo fetch --all --prune --quiet; then
 	echo '❌ Failed to fetch remotes' >&2
 	exit 2
 fi
-echo '✅ Fetched all remotes.'
+echo '✅ Fetched and pruned all remotes.'
 
 # ---
 
@@ -179,7 +181,7 @@ ${candidates}
 EOF
 
 	if [ "${dry_run}" = 'true' ]; then
-		echo 'ℹ️  Dry run: nothing deleted nor pruned.'
+		echo 'ℹ️  Dry run: nothing deleted.'
 		exit 0
 	fi
 
@@ -208,23 +210,7 @@ fi
 
 # ---
 
-if [ "${dry_run}" = 'true' ]; then
-	echo 'ℹ️  Dry run: nothing pruned.'
-	exit 0
-fi
-
-# Prune remote-tracking branches
-while read -r remote; do
-	[ -z "${remote}" ] && continue
-	git_repo remote prune "${remote}" >/dev/null
-	echo "* Pruned remote-tracking branches for remote '${remote}'."
-done <<EOF
-$(git_repo remote)
-EOF
-echo '✅ Pruned all remote-tracking branches.'
-
-# ---
-
+[ "${dry_run}" = 'true' ] && exit 0
 [ -z "${current_kind}" ] && exit 0
 
 # A synced current branch is kept while a remote branch still points to its commit
