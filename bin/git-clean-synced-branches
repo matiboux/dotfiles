@@ -5,14 +5,16 @@
 # Usage: git-clean-synced-branches [-h|--help] [-n|--dry-run] [-y|--yes]
 #
 # Remotes are fetched first (not pruned yet, so a branch deleted on the remote
-# after a merge is still seen as synced). A local branch is compared with its upstream branch
-# or, if it has none, with the remote branches of the same name on any remote
-# (synced if one of them has the same commit). Branches handled:
-# - synced: same commit as the remote branch, so nothing is lost. Force-deleted.
-# - gone: the upstream branch no longer exists on the remote. Deleted only if
-#   fully merged into the current branch (git branch -d), else kept.
-# Primary branches (dev, staging, main, master) and branches without a remote
-# are never deleted.
+# after a merge is still seen as synced). A remote that fails to fetch only
+# triggers a warning. A local branch is compared with its upstream branch and
+# with the remote branches of the same name on any remote. Branches handled:
+# - synced: same commit as one of these remote branches, so nothing is lost.
+#   Force-deleted.
+# - gone: the upstream branch no longer exists on the remote (and no other
+#   remote has the same commit). Deleted only if fully merged into the current
+#   branch (git branch -d), else kept.
+# Primary branches (dev, staging, main, master), branches without a remote and
+# branches checked out in a worktree are never deleted.
 #
 # The current branch is deleted last, after switching to the first primary branch
 # found. If it is synced, it is kept as long as it is still synced after pruning
@@ -83,13 +85,23 @@ deleted_count=0
 kept_count=0
 
 # Delete a local branch with the given git branch flag (-d or -D).
+# Branches checked out in a worktree are kept, and so are branches git refuses to delete.
 delete_branch() {
-	if git_repo branch "$1" "$2" >/dev/null 2>&1; then
+	if git_repo worktree list --porcelain | grep -qFx "branch refs/heads/$2"; then
+		kept_count=$((kept_count + 1))
+		echo "* ⚠️  Kept local branch '$2': checked out in a worktree"
+		return
+	fi
+	if delete_output="$(git_repo branch "$1" "$2" 2>&1)"; then
 		deleted_count=$((deleted_count + 1))
 		echo "* Deleted local branch '$2'."
 	else
 		kept_count=$((kept_count + 1))
-		echo "* ⚠️  Kept local branch '$2': not fully merged, delete it manually with git branch -D"
+		# Show git's own reason (first line only)
+		reason="$(printf '%s\n' "${delete_output}" | head -n 1 | sed -e 's/^error: //' -e 's/\.$//')"
+		hint=''
+		[ "$1" = '-d' ] && hint=', delete it manually with git branch -D if intended'
+		echo "* ⚠️  Kept local branch '$2': ${reason:-git branch $1 failed}${hint}"
 	fi
 }
 
@@ -99,11 +111,13 @@ current_branch="$(git_repo branch --show-current)"
 
 # ---
 
-if ! git_repo fetch --all --quiet; then
-	echo '❌ Failed to fetch remotes' >&2
-	exit 2
+# A remote that cannot be fetched is not fatal: its remote-tracking branches may
+# be stale, but a branch that was once on a remote is safe to delete anyway.
+if git_repo fetch --all --quiet; then
+	echo '✅ Fetched all remotes.'
+else
+	echo '⚠️  Failed to fetch some remotes, continuing with the existing remote-tracking branches.' >&2
 fi
-echo '✅ Fetched all remotes.'
 
 # ---
 
@@ -126,18 +140,18 @@ while read -r branch upstream; do
 			;;
 	esac
 	branch_commit="$(git_repo rev-parse "refs/heads/${branch}")"
+	kind=''
 	if [ -n "${remote_ref}" ]; then
-		if ! git_repo show-ref --verify --quiet "refs/remotes/${remote_ref}"; then
-			kind='gone'
-		elif [ "${branch_commit}" = "$(git_repo rev-parse "refs/remotes/${remote_ref}")" ]; then
-			kind='synced'
+		if upstream_commit="$(git_repo rev-parse --verify --quiet "refs/remotes/${remote_ref}")"; then
+			[ "${branch_commit}" = "${upstream_commit}" ] && kind='synced'
 		else
-			continue
+			kind='gone'
 		fi
-	else
-		# No remote upstream: fall back to the remote branches of the same name,
-		# on any remote. Synced if at least one of them has the same commit.
-		kind=''
+	fi
+	if [ "${kind}" != 'synced' ]; then
+		# Not synced with its upstream (or no remote upstream): the same commit on a
+		# remote branch of the same name, on any remote, makes it synced too.
+		# Nothing is lost then, even if the upstream is gone or has diverged.
 		while read -r remote; do
 			[ -z "${remote}" ] && continue
 			remote_commit="$(git_repo rev-parse --verify --quiet "refs/remotes/${remote}/${branch}")" || continue
@@ -148,8 +162,8 @@ while read -r branch upstream; do
 		done <<EOF
 $(git_repo remote)
 EOF
-		[ -z "${kind}" ] && continue
 	fi
+	[ -z "${kind}" ] && continue
 
 	candidates="${candidates:+${candidates}${nl}}${kind} ${branch}"
 	if [ "${branch}" = "${current_branch}" ]; then
@@ -218,8 +232,11 @@ fi
 # stale remote-tracking refs to detect branches deleted on the remote after a merge)
 while read -r remote; do
 	[ -z "${remote}" ] && continue
-	git_repo remote prune "${remote}" >/dev/null
-	echo "* Pruned remote-tracking branches for remote '${remote}'."
+	if git_repo remote prune "${remote}" >/dev/null 2>&1; then
+		echo "* Pruned remote-tracking branches for remote '${remote}'."
+	else
+		echo "* ⚠️  Could not prune remote-tracking branches for remote '${remote}'." >&2
+	fi
 done <<EOF
 $(git_repo remote)
 EOF
