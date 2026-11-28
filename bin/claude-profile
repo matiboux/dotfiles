@@ -24,6 +24,8 @@
 #   to the repository's .git/info/exclude (the tracked .gitignore is untouched).
 # - -g, --global: links ~/.claude/settings.json (user level).
 #   If it is a regular file, it is first saved as the "default" profile.
+#   The link is relative, so it also resolves inside a devcontainer where the
+#   config dir is mounted elsewhere (see docker-devcontainer-wrapper).
 # - -f, --force: replace an existing regular file that is not a profile link.
 #
 # Environment:
@@ -63,6 +65,8 @@ profile_file() {
 link_profile() {
 	[ -L "$1" ] || return 0
 	target=$(readlink "$1")
+	# Relative links (global scope) resolve against the link directory
+	case "$target" in /*) ;; *) target="$(dirname "$1")/$target" ;; esac
 	case "$target" in
 		"$STORE"/*.json) basename "$target" .json ;;
 	esac
@@ -139,8 +143,15 @@ cmd_use() {
 		fi
 	fi
 
+	# Global links are relative to the config dir when the store is inside it,
+	# so they still resolve when the config dir is mounted elsewhere (devcontainer)
+	target="$src"
+	if [ "$GLOBAL" = 1 ]; then
+		case "$src" in "$CONFIG_DIR"/*) target="${src#"$CONFIG_DIR"/}" ;; esac
+	fi
+
 	mkdir -p "$(dirname "$link")"
-	ln -sfn "$src" "$link"
+	ln -sfn "$target" "$link"
 	[ "$GLOBAL" = 1 ] || exclude_local "$(repo_root)"
 	echo "$link -> $1"
 }
