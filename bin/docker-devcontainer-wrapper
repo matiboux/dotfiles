@@ -42,6 +42,9 @@ CLAUDE_CONTAINER_DIR="/opt/claude-shared"
 
 # Name under which containers reach services running on the host (e.g. Ollama)
 HOST_ALIAS="${DEVCONTAINER_HOST_ALIAS:-host.docker.internal}"
+# Host port -> port to use from containers ("from:to ..."). Ollama's 11434 is
+# owned by Windows (WSL mirrored mode), so bin/ollama-forward relays 11435.
+HOST_PORT_MAP="${DEVCONTAINER_HOST_PORT_MAP:-11434:11435}"
 
 # Mount a container-specific copy of the `claude-profile` profile a settings
 # symlink points to, where "localhost" URLs target the host instead of the
@@ -62,10 +65,12 @@ mount_claude_profile() {
 	mp_dir="${CLAUDE_HOST_DIR}/profiles/.container"
 	mkdir -p "$mp_dir" && chmod 700 "$mp_dir" || return 0
 	mp_out="${mp_dir}/$(basename "$mp_host")"
-	( umask 077
-	  sed -e "s#//localhost\([:/\"]\)#//${HOST_ALIAS}\1#g" \
-	      -e "s#//127\.0\.0\.1\([:/\"]\)#//${HOST_ALIAS}\1#g" \
-	      "$mp_host" > "$mp_out" ) || return 0
+	mp_sed=""
+	for mp_pair in $HOST_PORT_MAP; do
+		mp_sed="${mp_sed}s#//\\(localhost\\|127\\.0\\.0\\.1\\):${mp_pair%%:*}\\([^0-9]\\)#//${HOST_ALIAS}:${mp_pair#*:}\\2#g;"
+	done
+	mp_sed="${mp_sed}s#//\\(localhost\\|127\\.0\\.0\\.1\\)\\([:/\"]\\)#//${HOST_ALIAS}\\2#g"
+	( umask 077; sed -e "$mp_sed" "$mp_host" > "$mp_out" ) || return 0
 	add_volume "${mp_out}:${mp_cont}:ro"
 	# Only needed when the profile actually points to the host
 	if grep -q "$HOST_ALIAS" "$mp_out"; then
