@@ -131,7 +131,8 @@ cmd_use() {
 			mv "$link" "$(profile_file default)"
 			chmod 600 "$(profile_file default)"
 			echo "Saved existing $link as profile 'default'"
-		elif [ "$FORCE" = 1 ]; then
+		elif [ "$FORCE" = 1 ] || { [ "$GLOBAL" = 1 ] && cmp -s "$link" "$(profile_file default)"; }; then
+			# Forced, or the regular file is identical to the saved default
 			rm "$link"
 		else
 			die "$link is a regular file, not a profile link (use --force to replace it)"
