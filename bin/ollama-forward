@@ -127,6 +127,12 @@ def cmd_run(args):
 
 def cmd_start(args):
     if service_exists() and systemd_available():
+        # Hand over from a background process, which would hold the port
+        if pid := running_pid():
+            os.kill(pid, 15)
+            PID_FILE.unlink(missing_ok=True)
+            time.sleep(0.5)
+            print(f"Stopped background process (pid {pid})")
         r = systemctl("enable", "--now", UNIT_NAME)
         if r.returncode:
             sys.exit(f"ollama-forward: {r.stderr.strip()}")
