@@ -16,11 +16,17 @@ WORKSPACE_TARGET="/workdir"
 # Filled by the tool sections below (newline-separated lists):
 #   VOLUMES: "host:container" bind mounts
 #   ENVS:    "NAME=value" environment variables
+#   HOSTS:   "name:ip" extra /etc/hosts entries
 VOLUMES=""
 ENVS=""
+HOSTS=""
 
 add_volume() { VOLUMES="${VOLUMES}${1}${NL}"; }
 add_env() { ENVS="${ENVS}${1}${NL}"; }
+add_host() {
+	case "$NL$HOSTS" in *"$NL$1$NL"*) return 0 ;; esac
+	HOSTS="${HOSTS}${1}${NL}"
+}
 
 # ---------- Helpers ----------
 
@@ -34,9 +40,44 @@ path_key() {
 CLAUDE_HOST_DIR="$HOME/.claude"        # your already-logged-in config
 CLAUDE_CONTAINER_DIR="/opt/claude-shared"
 
+# Name under which containers reach services running on the host (e.g. Ollama)
+HOST_ALIAS="${DEVCONTAINER_HOST_ALIAS:-host.docker.internal}"
+
+# Mount a container-specific copy of the `claude-profile` profile a settings
+# symlink points to, where "localhost" URLs target the host instead of the
+# container itself. The copy is mounted at the path the symlink resolves to
+# inside the container, so the symlink works unchanged.
+# Args: settings symlink on the host in $1
+mount_claude_profile() {
+	mp_link="$1"
+	[ -L "$mp_link" ] || return 0
+	mp_target="$(readlink "$mp_link")"
+	case "$mp_target" in
+		/*) mp_host="$mp_target"; mp_cont="$mp_target" ;;
+		*)  mp_host="$(dirname "$mp_link")/$mp_target"; mp_cont="${CLAUDE_CONTAINER_DIR}/$mp_target" ;;
+	esac
+	[ -f "$mp_host" ] || return 0
+	case "$mp_host" in "$CLAUDE_HOST_DIR"/profiles/*.json) ;; *) return 0 ;; esac
+
+	mp_dir="${CLAUDE_HOST_DIR}/profiles/.container"
+	mkdir -p "$mp_dir" && chmod 700 "$mp_dir" || return 0
+	mp_out="${mp_dir}/$(basename "$mp_host")"
+	( umask 077
+	  sed -e "s#//localhost\([:/\"]\)#//${HOST_ALIAS}\1#g" \
+	      -e "s#//127\.0\.0\.1\([:/\"]\)#//${HOST_ALIAS}\1#g" \
+	      "$mp_host" > "$mp_out" ) || return 0
+	add_volume "${mp_out}:${mp_cont}:ro"
+	# Only needed when the profile actually points to the host
+	if grep -q "$HOST_ALIAS" "$mp_out"; then
+		add_host "${HOST_ALIAS}:host-gateway"
+	fi
+}
+
 setup_claude() {
 	add_volume "${CLAUDE_HOST_DIR}:${CLAUDE_CONTAINER_DIR}"
 	add_env "CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_DIR}"
+	# Global profile (settings.json -> profiles/<name>.json)
+	mount_claude_profile "${CLAUDE_HOST_DIR}/settings.json"
 }
 
 # Claude stores sessions/memory under projects/<cwd key>. Since the workspace
@@ -52,6 +93,8 @@ setup_claude_project() {
 	# Create as the user, otherwise docker would create a root-owned dir
 	mkdir -p "$scp_dir" || return 0
 	add_volume "${scp_dir}:${CLAUDE_CONTAINER_DIR}/projects/$(path_key "$WORKSPACE_TARGET")"
+	# Project profile (.claude/settings.local.json -> absolute store path)
+	mount_claude_profile "${scp_real}/.claude/settings.local.json"
 }
 
 # ---------- Tool: OpenAI Codex (vscode extension) ----------
@@ -154,6 +197,11 @@ EOF
 	done <<EOF
 $ENVS
 EOF
+	while IFS= read -r run_h; do
+		if [ -n "$run_h" ]; then set -- --add-host "$run_h" "$@"; fi
+	done <<EOF
+$HOSTS
+EOF
 	exec "$REAL_DOCKER" "$run_sub" "$@"
 }
 
@@ -203,6 +251,14 @@ EOF
 		done <<EOF
 $ENVS
 EOF
+		if [ -n "$HOSTS" ]; then
+			echo "    extra_hosts:"
+			while IFS= read -r go_h; do
+				if [ -n "$go_h" ]; then echo "      - \"${go_h}\""; fi
+			done <<EOF
+$HOSTS
+EOF
+		fi
 	done <<EOF
 $1
 EOF
