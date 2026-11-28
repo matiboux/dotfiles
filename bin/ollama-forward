@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Forward a TCP port from the docker bridge to the Windows host's Ollama.
+
+With WSL2 in mirrored networking mode, only WSL's 127.0.0.1 reaches services
+running on Windows (e.g. Ollama), so devcontainers on the docker bridge can't
+reach them. This listens on the docker bridge gateway (what `host.docker.internal`
+resolves to with `--add-host host.docker.internal:host-gateway`) and relays to
+127.0.0.1, so docker-devcontainer-wrapper's rewritten profile URLs work.
+
+Usage: ollama-forward [-h] [--bind ADDR] [--port PORT] [--target HOST:PORT]
+
+Environment:
+- OLLAMA_FORWARD_BIND: listen address. (default: docker0 gateway, 172.17.0.1)
+- OLLAMA_FORWARD_PORT: listen port. (default: 11435, as Windows already owns 11434 in mirrored mode)
+- OLLAMA_FORWARD_TARGET: destination. (default: 127.0.0.1:11434)
+"""
+import argparse
+import asyncio
+import os
+import subprocess
+import sys
+
+
+def docker_gateway():
+    """Gateway of the default docker bridge, falling back to 172.17.0.1."""
+    try:
+        out = subprocess.run(
+            ["docker", "network", "inspect", "bridge", "-f",
+             "{{(index .IPAM.Config 0).Gateway}}"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        if out:
+            return out
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "172.17.0.1"
+
+
+async def pipe(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except (ConnectionError, asyncio.CancelledError):
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+def make_handler(host, port):
+    async def handle(client_r, client_w):
+        try:
+            up_r, up_w = await asyncio.open_connection(host, port)
+        except OSError as e:
+            print(f"cannot reach {host}:{port}: {e}", file=sys.stderr)
+            client_w.close()
+            return
+        await asyncio.gather(pipe(client_r, up_w), pipe(up_r, client_w))
+    return handle
+
+
+async def main(args):
+    host, _, port = args.target.rpartition(":")
+    server = await asyncio.start_server(
+        make_handler(host or "127.0.0.1", int(port)), args.bind, args.port)
+    print(f"forwarding {args.bind}:{args.port} -> {args.target}", flush=True)
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--bind", default=os.environ.get("OLLAMA_FORWARD_BIND") or docker_gateway())
+    p.add_argument("--port", type=int, default=int(os.environ.get("OLLAMA_FORWARD_PORT", 11435)))
+    p.add_argument("--target", default=os.environ.get("OLLAMA_FORWARD_TARGET", "127.0.0.1:11434"))
+    try:
+        asyncio.run(main(p.parse_args()))
+    except KeyboardInterrupt:
+        pass
+    except OSError as e:
+        sys.exit(f"ollama-forward: {e}")
