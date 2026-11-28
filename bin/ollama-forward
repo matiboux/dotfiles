@@ -7,11 +7,21 @@ reach them. This listens on the docker bridge gateway (what `host.docker.interna
 resolves to with `--add-host host.docker.internal:host-gateway`) and relays to
 127.0.0.1, so docker-devcontainer-wrapper's rewritten profile URLs work.
 
-Usage: ollama-forward [-h] [--bind ADDR] [--port PORT] [--target HOST:PORT]
+Usage: ollama-forward [-h] <command> [--bind ADDR] [--port PORT] [--target HOST:PORT]
+
+Commands:
+- start     Start the forward in the background. If the systemd user service
+            exists (see enable), enable it and start it (also at next login).
+- stop      Stop the forward. If the service exists, stop and disable it.
+- status    Show whether the forward is running.
+- run       Run the forward in the foreground. (default)
+- enable    Create the systemd user service (it is not started).
+- disable   Stop the service and delete it.
 
 Environment:
 - OLLAMA_FORWARD_BIND: listen address. (default: docker0 gateway, 172.17.0.1)
-- OLLAMA_FORWARD_PORT: listen port. (default: 11435, as Windows already owns 11434 in mirrored mode)
+- OLLAMA_FORWARD_PORT: listen port. (default: 11435, as Windows already owns
+  11434 in mirrored mode)
 - OLLAMA_FORWARD_TARGET: destination. (default: 127.0.0.1:11434)
 """
 import argparse
@@ -19,6 +29,15 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
+from pathlib import Path
+
+SELF = Path(__file__).resolve()
+UNIT_NAME = "ollama-forward.service"
+UNIT_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd/user" / UNIT_NAME
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+PID_FILE = RUNTIME_DIR / f"ollama-forward-{os.getuid()}.pid"
+LOG_FILE = RUNTIME_DIR / f"ollama-forward-{os.getuid()}.log"
 
 
 def docker_gateway():
@@ -62,7 +81,7 @@ def make_handler(host, port):
     return handle
 
 
-async def main(args):
+async def serve(args):
     host, _, port = args.target.rpartition(":")
     server = await asyncio.start_server(
         make_handler(host or "127.0.0.1", int(port)), args.bind, args.port)
@@ -71,14 +90,132 @@ async def main(args):
         await server.serve_forever()
 
 
-if __name__ == "__main__":
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--bind", default=os.environ.get("OLLAMA_FORWARD_BIND") or docker_gateway())
-    p.add_argument("--port", type=int, default=int(os.environ.get("OLLAMA_FORWARD_PORT", 11435)))
-    p.add_argument("--target", default=os.environ.get("OLLAMA_FORWARD_TARGET", "127.0.0.1:11434"))
+# ---------- systemd user service ----------
+
+def systemctl(*cmd, check=False):
+    return subprocess.run(["systemctl", "--user", *cmd], capture_output=True, text=True, check=check)
+
+
+def systemd_available():
     try:
-        asyncio.run(main(p.parse_args()))
+        return systemctl("show-environment").returncode == 0
+    except OSError:
+        return False
+
+
+def service_exists():
+    return UNIT_PATH.exists()
+
+
+# ---------- background process (no service) ----------
+
+def running_pid():
+    try:
+        pid = int(PID_FILE.read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_run(args):
+    try:
+        asyncio.run(serve(args))
     except KeyboardInterrupt:
         pass
+
+
+def cmd_start(args):
+    if service_exists() and systemd_available():
+        r = systemctl("enable", "--now", UNIT_NAME)
+        if r.returncode:
+            sys.exit(f"ollama-forward: {r.stderr.strip()}")
+        print(f"Started and enabled {UNIT_NAME}")
+        return
+    if pid := running_pid():
+        print(f"Already running (pid {pid})")
+        return
+    with open(LOG_FILE, "w") as log:
+        proc = subprocess.Popen(
+            [sys.executable, str(SELF), "run", "--bind", args.bind,
+             "--port", str(args.port), "--target", args.target],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    time.sleep(1)
+    if proc.poll() is not None:
+        sys.exit(f"ollama-forward: failed to start:\n{LOG_FILE.read_text().strip()}")
+    PID_FILE.write_text(str(proc.pid))
+    print(f"Started (pid {proc.pid}), forwarding {args.bind}:{args.port} -> {args.target}")
+
+
+def cmd_stop(args):
+    if service_exists() and systemd_available():
+        systemctl("disable", "--now", UNIT_NAME)
+        print(f"Stopped and disabled {UNIT_NAME}")
+    if pid := running_pid():
+        os.kill(pid, 15)
+        PID_FILE.unlink(missing_ok=True)
+        print(f"Stopped (pid {pid})")
+    elif not service_exists():
+        print("Not running")
+
+
+def cmd_status(args):
+    if service_exists() and systemd_available():
+        active = systemctl("is-active", UNIT_NAME).stdout.strip()
+        enabled = systemctl("is-enabled", UNIT_NAME).stdout.strip()
+        print(f"service: {active}, {enabled}")
+    elif service_exists():
+        print("service: installed (systemd unavailable)")
+    if pid := running_pid():
+        print(f"process: running (pid {pid})")
+    elif not service_exists():
+        print("not running")
+
+
+def cmd_enable(args):
+    if not systemd_available():
+        sys.exit("ollama-forward: systemd user instance not available")
+    UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UNIT_PATH.write_text(f"""[Unit]
+Description=Relay the docker bridge to the Windows host's Ollama
+
+[Service]
+ExecStart={SELF} run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+""")
+    systemctl("daemon-reload")
+    print(f"Created {UNIT_PATH} (use `ollama-forward start` to start and enable it)")
+
+
+def cmd_disable(args):
+    if service_exists() and systemd_available():
+        systemctl("disable", "--now", UNIT_NAME)
+    if service_exists():
+        UNIT_PATH.unlink()
+        if systemd_available():
+            systemctl("daemon-reload")
+        print(f"Deleted {UNIT_PATH}")
+    else:
+        print("No service")
+
+
+COMMANDS = {"run": cmd_run, "start": cmd_start, "stop": cmd_stop,
+            "status": cmd_status, "enable": cmd_enable, "disable": cmd_disable}
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("command", nargs="?", default="run", choices=COMMANDS)
+    p.add_argument("--bind", default=os.environ.get("OLLAMA_FORWARD_BIND"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("OLLAMA_FORWARD_PORT", 11435)))
+    p.add_argument("--target", default=os.environ.get("OLLAMA_FORWARD_TARGET", "127.0.0.1:11434"))
+    args = p.parse_args()
+    if args.command in ("run", "start"):
+        args.bind = args.bind or docker_gateway()
+    try:
+        COMMANDS[args.command](args)
     except OSError as e:
         sys.exit(f"ollama-forward: {e}")
