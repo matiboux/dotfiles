@@ -1,0 +1,212 @@
+#!/bin/sh
+# Switch between Claude Code settings profiles using symlinks.
+#
+# Usage: claude-profile [-h|--help] <command> [args]
+#
+# Profiles are JSON settings files (same format as Claude Code's settings.json,
+# e.g. {"env": {"ANTHROPIC_BASE_URL": "..."}}) kept in a private store:
+# ~/.claude/profiles/<name>.json (directory 700, files 600).
+# Switching a profile only creates a symlink to the stored file, so editing a
+# profile in the store applies immediately.
+#
+# Commands:
+# - list                   List the stored profiles, marking the active ones.
+# - current [-g]           Show the active profile.
+# - use <name> [-g] [-f]   Activate a profile.
+# - unset [-g]             Deactivate the profile (remove the link).
+#                          With --global, re-activates the "default" profile.
+# - add <name> [FILE|-]    Create a profile from FILE or stdin (-).
+#                          Without a source, opens an empty one in $EDITOR.
+# - path [name]            Print the store directory or a profile file path.
+#
+# Scope:
+# - Default (project): links <git root>/.claude/settings.local.json and adds it
+#   to the repository's .git/info/exclude (the tracked .gitignore is untouched).
+# - -g, --global: links ~/.claude/settings.json (user level).
+#   If it is a regular file, it is first saved as the "default" profile.
+# - -f, --force: replace an existing regular file that is not a profile link.
+#
+# Environment:
+# - CLAUDE_CONFIG_DIR: Claude config directory. (default: ~/.claude)
+# - CLAUDE_PROFILES_DIR: profile store. (default: $CLAUDE_CONFIG_DIR/profiles)
+#
+# Example:
+#   claude-profile add ollama ollama.json
+#   claude-profile use ollama          # this repository only
+#   claude-profile use ollama -g       # all projects
+#   claude-profile unset
+
+set -eu
+
+CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+STORE="${CLAUDE_PROFILES_DIR:-$CONFIG_DIR/profiles}"
+GLOBAL_LINK="$CONFIG_DIR/settings.json"
+LOCAL_REL=".claude/settings.local.json"
+
+die() { echo "claude-profile: $*" >&2; exit 1; }
+
+usage() { sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "$0"; }
+
+ensure_store() {
+	mkdir -p "$STORE"
+	chmod 700 "$STORE"
+}
+
+profile_file() {
+	case "$1" in
+		''|*/*|.*) die "invalid profile name: '$1'" ;;
+	esac
+	echo "$STORE/$1.json"
+}
+
+# Resolve a link target to the profile name, or nothing if not a store link
+link_profile() {
+	[ -L "$1" ] || return 0
+	target=$(readlink "$1")
+	case "$target" in
+		"$STORE"/*.json) basename "$target" .json ;;
+	esac
+}
+
+repo_root() {
+	git rev-parse --show-toplevel 2>/dev/null || die "not in a git repository (use --global)"
+}
+
+# Resolve the link path for the chosen scope
+scope_link() {
+	if [ "$GLOBAL" = 1 ]; then
+		echo "$GLOBAL_LINK"
+	else
+		echo "$(repo_root)/$LOCAL_REL"
+	fi
+}
+
+exclude_local() {
+	exclude=$(git -C "$1" rev-parse --git-path info/exclude)
+	case "$exclude" in /*) ;; *) exclude="$1/$exclude" ;; esac
+	mkdir -p "$(dirname "$exclude")"
+	if ! grep -qxF "/$LOCAL_REL" "$exclude" 2>/dev/null; then
+		echo "/$LOCAL_REL" >> "$exclude"
+	fi
+}
+
+cmd_list() {
+	[ -d "$STORE" ] || { echo "No profiles (store: $STORE)"; return; }
+	g=$(link_profile "$GLOBAL_LINK")
+	l=''
+	if root=$(git rev-parse --show-toplevel 2>/dev/null); then
+		l=$(link_profile "$root/$LOCAL_REL")
+	fi
+	for f in "$STORE"/*.json; do
+		[ -e "$f" ] || { echo "No profiles (store: $STORE)"; return; }
+		n=$(basename "$f" .json)
+		mark=''
+		[ "$n" = "$g" ] && mark="$mark global"
+		[ "$n" = "$l" ] && mark="$mark project"
+		echo "$n${mark:+  [${mark# }]}"
+	done
+}
+
+cmd_current() {
+	link=$(scope_link)
+	if [ -L "$link" ]; then
+		name=$(link_profile "$link")
+		[ -n "$name" ] && echo "$name" || echo "(link to $(readlink "$link"), not in store)"
+	elif [ -e "$link" ]; then
+		echo "(regular file, no profile)"
+	else
+		echo "(none)"
+	fi
+}
+
+cmd_use() {
+	[ -n "${1:-}" ] || die "usage: claude-profile use <name> [-g] [-f]"
+	src=$(profile_file "$1")
+	[ -f "$src" ] || die "unknown profile '$1' (see: claude-profile list)"
+	link=$(scope_link)
+
+	if [ -e "$link" ] && [ ! -L "$link" ]; then
+		if [ "$GLOBAL" = 1 ] && [ ! -e "$(profile_file default)" ]; then
+			ensure_store
+			mv "$link" "$(profile_file default)"
+			chmod 600 "$(profile_file default)"
+			echo "Saved existing $link as profile 'default'"
+		elif [ "$FORCE" = 1 ]; then
+			rm "$link"
+		else
+			die "$link is a regular file, not a profile link (use --force to replace it)"
+		fi
+	fi
+
+	mkdir -p "$(dirname "$link")"
+	ln -sfn "$src" "$link"
+	[ "$GLOBAL" = 1 ] || exclude_local "$(repo_root)"
+	echo "$link -> $1"
+}
+
+cmd_unset() {
+	if [ "$GLOBAL" = 1 ]; then
+		[ -f "$(profile_file default)" ] || die "no 'default' profile to restore"
+		cmd_use default
+		return
+	fi
+	link=$(scope_link)
+	[ -L "$link" ] || { echo "No profile linked in this project"; return; }
+	rm "$link"
+	echo "Removed $link"
+}
+
+cmd_add() {
+	[ -n "${1:-}" ] || die "usage: claude-profile add <name> [FILE|-]"
+	dest=$(profile_file "$1")
+	[ ! -e "$dest" ] || die "profile '$1' already exists ($dest)"
+	ensure_store
+	umask 077
+	case "${2:-}" in
+		'') echo '{
+  "env": {}
+}' > "$dest"
+			"${VISUAL:-${EDITOR:-vi}}" "$dest" ;;
+		-) cat > "$dest" ;;
+		*) [ -f "$2" ] || die "no such file: $2"; cp "$2" "$dest" ;;
+	esac
+	chmod 600 "$dest"
+	echo "Created $dest"
+}
+
+cmd_path() {
+	if [ -n "${1:-}" ]; then profile_file "$1"; else echo "$STORE"; fi
+}
+
+GLOBAL=0
+FORCE=0
+CMD=''
+ARGS=''
+for arg in "$@"; do
+	case "$arg" in
+		-h|--help) usage; exit 0 ;;
+		-g|--global) GLOBAL=1 ;;
+		-f|--force) FORCE=1 ;;
+		*) if [ -z "$CMD" ]; then CMD="$arg"; else ARGS="$ARGS
+$arg"; fi ;;
+	esac
+done
+
+[ -n "$CMD" ] || { usage; exit 1; }
+
+# Re-split the positional arguments (profile names and paths have no newlines)
+IFS='
+'
+# shellcheck disable=SC2086
+set -- $ARGS
+unset IFS
+
+case "$CMD" in
+	list|ls) cmd_list ;;
+	current) cmd_current ;;
+	use) cmd_use "$@" ;;
+	unset|off) cmd_unset ;;
+	add) cmd_add "$@" ;;
+	path) cmd_path "$@" ;;
+	*) die "unknown command '$CMD' (see --help)" ;;
+esac
